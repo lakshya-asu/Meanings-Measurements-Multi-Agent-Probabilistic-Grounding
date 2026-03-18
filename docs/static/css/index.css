@@ -1,7 +1,7 @@
 /* Base */
 body {
   font-family: 'Noto Sans', sans-serif;
-  padding-top: 3.25rem; /* offset fixed navbar */
+  padding-top: 3.25rem; /* = Bulma navbar height */
 }
 
 h1, h2, h3, .title, .subtitle {
