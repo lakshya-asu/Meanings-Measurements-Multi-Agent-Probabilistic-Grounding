@@ -42,7 +42,7 @@ The repository includes the current MAPG Habitat workflow, benchmarking code, mu
 
 - Paper PDF: [Meanings and Measurements.pdf](./Meanings%20and%20Measurements.pdf)
 - arXiv: coming soon
-- Project page: from the paper, the accompanying webpage is listed as `sites.google.com/view/mapg-web/home`
+- Project page: https://lakshya-asu.github.io/Meanings-Measurements-Multi-Agent-Probabilistic-Grounding/
 
 ## What This Repo Contains
 
