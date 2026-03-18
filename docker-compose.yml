@@ -1,7 +1,7 @@
 services:
-  grapheqa:
+  mapg:
     image: ${GRAPH_EQA_IMAGE:-flux04/mapg_habitat:src}
-    container_name: grapheqa_dev
+    container_name: mapg_dev
     gpus: all
     env_file:
       - .env

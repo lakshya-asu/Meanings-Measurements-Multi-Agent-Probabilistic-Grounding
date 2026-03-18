@@ -1,4 +1,3 @@
-# /home/artemis/project/graph_eqa_swagat/src/scripts/run_spatial_experiment.py
 
 import json
 from pathlib import Path

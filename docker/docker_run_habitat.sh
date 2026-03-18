@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the Docker container
-CONTAINER_NAME="grapheqa_dev"
+CONTAINER_NAME="mapg_dev"
 
 # Docker image to use
 DOCKER_IMAGE="flux04/mapg_habitat:src"

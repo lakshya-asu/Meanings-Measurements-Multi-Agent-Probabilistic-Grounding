@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Name of the Docker container
-CONTAINER_NAME="grapheqa-for-stretch"
+CONTAINER_NAME="mapg-for-stretch"
 
 # Docker image to use
-DOCKER_IMAGE="blakerbuchanan/grapheqa_for_stretch:0.0.1"
+DOCKER_IMAGE="flux04/mapg_habitat:0.0.1"
 
 # Path to the workspace directory
-# You should be in the grapheqa_ws directory
+# You should be in the MAPG directory
 WORKSPACE_DIR="$(pwd)"
 
 # Environment variables

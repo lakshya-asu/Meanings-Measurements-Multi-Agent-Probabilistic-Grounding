@@ -1,4 +1,3 @@
-# /home/artemis/project/graph_eqa_swagat/src/msp/pdf.py
 # Lightweight, dependency-free PDF utilities vendored from your MSP repo.
 
 import numpy as np

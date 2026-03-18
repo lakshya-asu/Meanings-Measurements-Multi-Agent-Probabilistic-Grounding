@@ -1,4 +1,4 @@
-# GraphEQA Setup Guide
+# MAPG Setup Guide
 
 This guide is for collaborators who need to run the current Habitat workflow from:
 
@@ -11,7 +11,7 @@ It assumes Linux with Docker, Docker Compose, and an NVIDIA GPU.
 ## What collaborators need
 
 1. Clone the repo:
-   `https://github.com/TechTinkerPradhan/graph_eqa_swagat`
+   `https://github.com/TechTinkerPradhan/MAPG`
 2. Download the dataset bundle from:
    `https://drive.google.com/drive/folders/1YiWecgga3Eh7GWsdlQEv2iaklzO6MaQ7?usp=drive_link`
 3. Pull the Docker image we publish:
@@ -20,7 +20,7 @@ It assumes Linux with Docker, Docker Compose, and an NVIDIA GPU.
 ## Expected host layout
 
 ```text
-graph_eqa_swagat/
+MAPG/
 ├── datasets/
 ├── docker-compose.yml
 ├── .env
@@ -37,8 +37,8 @@ The container expects:
 
 ```bash
 cd ~
-git clone https://github.com/TechTinkerPradhan/graph_eqa_swagat
-cd graph_eqa_swagat
+git clone https://github.com/TechTinkerPradhan/MAPG
+cd MAPG
 ```
 
 ## 2. Download the datasets
@@ -46,7 +46,7 @@ cd graph_eqa_swagat
 Download the Google Drive folder and place its contents under:
 
 ```bash
-~/graph_eqa_swagat/datasets
+~/MAPG/datasets
 ```
 
 Quick sanity check:
@@ -90,13 +90,13 @@ docker compose up -d
 Open a shell:
 
 ```bash
-docker compose exec grapheqa bash
+docker compose exec mapg bash
 ```
 
 Inside the container, confirm the environment:
 
 ```bash
-conda activate grapheqa
+conda activate mapg
 cd /workspace
 nvidia-smi
 ls -lah /datasets | head
@@ -160,7 +160,7 @@ docker compose up -d
 Shell:
 
 ```bash
-docker compose exec grapheqa bash
+docker compose exec mapg bash
 ```
 
 Logs:

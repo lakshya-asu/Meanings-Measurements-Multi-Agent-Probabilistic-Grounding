@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# /home/artemis/project/graph_eqa_swagat/src/planners/vlm_planner_msp.py
 
 from __future__ import annotations
 

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"swagat\\\\|grapheqa\\\\|GraphEQA\" /home/flux/MAPG --include=*.yml --include=*.yaml --include=*.md --include=*.sh --include=*.py --include=Dockerfile*)"
+    ]
+  }
+}

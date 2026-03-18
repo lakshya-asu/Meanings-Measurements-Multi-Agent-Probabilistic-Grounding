@@ -81,11 +81,11 @@ RUN curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/downloa
 RUN bash Miniforge3-$(uname)-$(uname -m).sh -b
 # Add mamba to the path
 ENV PATH /root/miniforge3/bin:$PATH
-RUN mamba create -n "grapheqa" python=3.10 -y \
+RUN mamba create -n "mapg" python=3.10 -y \
     && mamba init
 
 WORKDIR /catkin_ws
-RUN source activate grapheqa \
+RUN source activate mapg \
     && source /opt/ros/noetic/setup.bash \
     && export CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
     && pip install "src/spark_dsg[viz]"
@@ -93,18 +93,18 @@ RUN source activate grapheqa \
 WORKDIR /catkin_ws/src/hydra
 
 RUN source /catkin_ws/devel/setup.bash \
-    && source activate grapheqa \
+    && source activate mapg \
     && export CMAKE_FLAGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
     && pip install setuptools==69.5.1 \
     && pip install -r python/build_requirements.txt \
     && source ../../devel/setup.bash \
-    && source activate grapheqa \
+    && source activate mapg \
     && export CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
     && pip install -e .
 
 WORKDIR /root
 
-RUN source activate grapheqa \
+RUN source activate mapg \
     && git clone https://github.com/lakshya-asu/Meanings-Measurements-Multi-Agent-Probabilistic-Grounding.git graph_eqa \
     && cd graph_eqa \
     && pip install sentencepiece \
@@ -116,7 +116,7 @@ RUN apt-get update && apt-get install -y \
     libasound-dev portaudio19-dev libportaudio2 libportaudiocpp0 espeak ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN source activate grapheqa \
+RUN source activate mapg \
     && git clone https://github.com/hello-robot/stretch_ai --branch hello-peiqi/grapheqa \
     && cd stretch_ai \
     && pip install -e ./src[dev] \
@@ -137,7 +137,7 @@ RUN echo "source /catkin_ws/devel/setup.bash" >> ~/.bashrc
 WORKDIR /root/graph_eqa
 # Dataset assets should be mounted from the host under /datasets.
 
-RUN source activate grapheqa && python -c "from transformers import AutoModel ; model = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')"
+RUN source activate mapg && python -c "from transformers import AutoModel ; model = AutoModel.from_pretrained('google/siglip-so400m-patch14-384')"
 
 # Default command: Launch bash
 CMD ["bash"]

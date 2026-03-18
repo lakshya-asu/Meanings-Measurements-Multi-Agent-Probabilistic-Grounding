@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# /home/artemis/project/graph_eqa_swagat/src/scripts/run_multi_agent_benchmark.py
 # Multi-Agent MSP runner + Weights & Biases experiment tracking
 
 from tqdm import tqdm

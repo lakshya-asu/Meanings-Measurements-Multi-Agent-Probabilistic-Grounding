@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# /home/artemis/project/graph_eqa_swagat/src/scripts/run_msp_benchmark.py
 # MSP SMART VLM runner + Weights & Biases experiment tracking
 #
 # CHANGES (warmup + pre-answer approach):

@@ -127,7 +127,7 @@ To run with Compose:
 
 ```bash
 docker compose up -d
-docker compose exec grapheqa bash
+docker compose exec mapg bash
 ```
 
 ## Datasets

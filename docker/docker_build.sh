@@ -6,7 +6,7 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 source "${DIR}/docker_tag.sh"
 
-docker_registry_image=blakerbuchanan/grapheqa_for_stretch
+docker_registry_image=flux04/mapg_habitat
 
 docker build \
        --build-arg TAG=${TAG} \

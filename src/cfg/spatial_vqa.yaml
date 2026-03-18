@@ -1,8 +1,6 @@
-# /home/artemis/project/graph_eqa_swagat/src/cfg/gemini_spatial.yaml
-
 # General
 seed: 42
-exp_name: grapheqa_spatial_${vlm.name} # Changed to reflect spatial experiment
+exp_name: mapg_spatial_${vlm.name}
 output_path: outputs_v5/${exp_name}_test # Changed output path
 results_filename: ${vlm.name}_images_${vlm.use_image}
 gpu: 0 
