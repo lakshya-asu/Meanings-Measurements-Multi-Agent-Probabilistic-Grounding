@@ -51,6 +51,9 @@ wandb
 
 STARTUP.md
 
+# Superpowers internal docs
+docs/superpowers/
+
 spatial_experiment/data
 spatial_experiment/outputs_v2.env
 #spatial_experiment/evals
