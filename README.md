@@ -1,7 +1,25 @@
 # MAPG: Meanings and Measurements
 
 <p align="center">
-  <a href="https://youtu.be/zK7Ya-g9eXg">Watch Demo Video on YouTube</a>
+  <b>Multi-Agent Probabilistic Grounding for Vision-Language Navigation</b>
+</p>
+
+<p align="center">
+  <a href="https://youtu.be/zK7Ya-g9eXg">
+    <img src="https://img.shields.io/badge/Demo-YouTube-red?style=for-the-badge&logo=youtube" alt="YouTube Demo" />
+  </a>
+  <a href="./Meanings%20and%20Measurements.pdf">
+    <img src="https://img.shields.io/badge/Paper-PDF-blue?style=for-the-badge&logo=adobeacrobatreader" alt="Paper PDF" />
+  </a>
+  <a href="#">
+    <img src="https://img.shields.io/badge/arXiv-coming_soon-b31b1b?style=for-the-badge&logo=arxiv" alt="arXiv placeholder" />
+  </a>
+  <a href="https://hub.docker.com/r/flux04/mapg_habitat">
+    <img src="https://img.shields.io/badge/Docker-flux04%2Fmapg__habitat-2496ED?style=for-the-badge&logo=docker" alt="Docker image" />
+  </a>
+  <a href="./README_SETUP.md">
+    <img src="https://img.shields.io/badge/Setup-Guide-2ea44f?style=for-the-badge" alt="Setup Guide" />
+  </a>
 </p>
 
 <p align="center">
