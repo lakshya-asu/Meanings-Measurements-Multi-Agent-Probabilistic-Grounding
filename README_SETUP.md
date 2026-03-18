@@ -12,8 +12,40 @@ It assumes Linux with Docker, Docker Compose, and an NVIDIA GPU.
 
 1. Clone the repo:
    `https://github.com/TechTinkerPradhan/MAPG`
-2. Download the dataset bundle from:
-   `https://drive.google.com/drive/folders/1YiWecgga3Eh7GWsdlQEv2iaklzO6MaQ7?usp=drive_link`
+2. Download the dataset bundles:
+
+### Download the HM3D dataset
+The HM3D dataset along with semantic annotations can be downloaded from [here](https://github.com/matterport/habitat-matterport-3dresearch). Follow the instructions [here](https://github.com/facebookresearch/habitat-sim/blob/main/DATASETS.md#habitat-matterport-3d-research-dataset-hm3d) to download together the train/val scenes, semantic annotations and configs. The data folder should look as follows:
+
+```graphql
+hm3d/train
+├─ hm3d-train-semantic-annots-v0.2
+|    ├─ ...
+├─ 00366-fxbzYAGkrtm
+|    ├─ fxbzYAGkrtm.basis.glb
+|    ├─ fxbzYAGkrtm.basis.navmesh
+|    ├─ fxbzYAGkrtm.semantic.glb
+|    ├─ fxbzYAGkrtm.semantic.txt
+├─ ...
+```
+
+### Download Explore-EQA dataset
+Navigate to [this link](https://drive.google.com/drive/folders/1YiWecgga3Eh7GWsdlQEv2iaklzO6MaQ7?usp=drive_link) and download `msp_questions.csv` and `scene_init_poses_semantics_only.csv` into explore-eqa in datasets/ directory in your workspace.  
+
+Finally datasets/  should look like :-
+datasets/  
+   ├─ explore-eqa
+      ├─ msp_questions.csv
+      ├─ scene_init_poses_semantics_only.csv
+   ├─ hm3d/train
+      ├─ hm3d-train-semantic-annots-v0.2
+      |    ├─ ...
+      ├─ 00366-fxbzYAGkrtm
+      |    ├─ fxbzYAGkrtm.basis.glb
+      |    ├─ fxbzYAGkrtm.basis.navmesh
+      |    ├─ fxbzYAGkrtm.semantic.glb
+      |    ├─ fxbzYAGkrtm.semantic.txt
+      ├─ ...
 3. Pull the Docker image we publish:
    `flux04/mapg_habitat:src`
 
