@@ -1,0 +1,112 @@
+/* Base */
+body {
+  font-family: 'Noto Sans', sans-serif;
+  padding-top: 3.25rem; /* offset fixed navbar */
+}
+
+h1, h2, h3, .title, .subtitle {
+  color: #1a1a2e;
+}
+
+/* Sections */
+.section {
+  padding: 3rem 1.5rem;
+}
+
+.section-alt {
+  background-color: #f9f9f9;
+}
+
+/* Hero */
+.hero-body {
+  background-color: #f5f5f5;
+}
+
+/* Buttons */
+.button.is-link.is-outlined:hover,
+.button.is-link.is-outlined:focus {
+  background-color: #00897b;
+  border-color: #00897b;
+  color: #fff;
+}
+
+.button.is-rounded {
+  margin: 0.25rem;
+}
+
+.button[disabled],
+.button.is-disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Figures */
+.figure-img {
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+  max-width: 100%;
+}
+
+.figure-caption {
+  font-size: 0.9rem;
+  color: #555;
+  margin-top: 0.75rem;
+  font-style: italic;
+  text-align: center;
+}
+
+/* YouTube embed */
+.video-container {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  margin-bottom: 2rem;
+}
+
+/* BibTeX */
+.bibtex-block {
+  background: #1a1a2e;
+  color: #e0e0e0;
+  border-radius: 8px;
+  padding: 1.5rem;
+  overflow-x: auto;
+  font-family: monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+/* Author list */
+.authors {
+  font-size: 1.1rem;
+  margin-bottom: 0.4rem;
+}
+
+.equal-contrib {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+}
+
+.affiliations {
+  font-size: 0.95rem;
+  color: #444;
+  margin-bottom: 1.25rem;
+}
+
+/* Results grid labels */
+.result-label {
+  font-weight: 600;
+  text-align: center;
+  margin-top: 0.5rem;
+  color: #1a1a2e;
+}
+
+/* Footer */
+footer.footer {
+  padding: 2rem 1.5rem;
+  background: #f5f5f5;
+  text-align: center;
+  font-size: 0.88rem;
+  color: #666;
+}
