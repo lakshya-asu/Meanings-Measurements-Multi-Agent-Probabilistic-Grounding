@@ -16,7 +16,265 @@
 </head>
 <body>
 
-  <!-- SECTIONS GO HERE -->
+  <!-- NAVBAR -->
+<nav class="navbar is-fixed-top is-white" role="navigation" aria-label="main navigation">
+  <div class="container">
+    <div class="navbar-brand">
+      <a class="navbar-item has-text-weight-bold" href="#">MAPG</a>
+      <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="navbarMenu">
+        <span aria-hidden="true"></span>
+        <span aria-hidden="true"></span>
+        <span aria-hidden="true"></span>
+      </a>
+    </div>
+    <div id="navbarMenu" class="navbar-menu">
+      <div class="navbar-end">
+        <a class="navbar-item" href="#abstract">Abstract</a>
+        <a class="navbar-item" href="#method">Method</a>
+        <a class="navbar-item" href="#results">Results</a>
+        <a class="navbar-item" href="#bibtex">BibTeX</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-body">
+    <div class="container has-text-centered">
+      <h1 class="title is-3" style="max-width:800px; margin: 0 auto 1rem;">
+        Meanings and Measurements: Multi-Agent Probabilistic Grounding for Vision-Language Navigation
+      </h1>
+
+      <p class="authors">
+        <a href="#">Swagat Padhan</a><sup>★</sup>,&nbsp;
+        <a href="#">Lakshya Jain</a><sup>★</sup>,&nbsp;
+        <a href="#">Bhavya Shah</a>,&nbsp;
+        <a href="#">Omkar Patil</a>,&nbsp;
+        <a href="#">Thao Nguyen</a>,&nbsp;
+        <a href="#">Nakul Gopalan</a>
+      </p>
+      <p class="equal-contrib">★ Equal contribution</p>
+      <p class="affiliations">Arizona State University &nbsp;·&nbsp; Haverford College</p>
+
+      <div class="buttons is-centered">
+        <a class="button is-link is-outlined is-rounded"
+           href="./Meanings%20and%20Measurements.pdf" target="_blank">
+          <span class="icon"><i class="fa-solid fa-file-pdf"></i></span>
+          <span>Paper</span>
+        </a>
+        <a class="button is-danger is-outlined is-rounded"
+           href="https://youtu.be/zK7Ya-g9eXg" target="_blank">
+          <span class="icon"><i class="fa-brands fa-youtube"></i></span>
+          <span>Video</span>
+        </a>
+        <a class="button is-warning is-outlined is-rounded is-disabled"
+           href="#" aria-disabled="true">
+          <span class="icon"><i class="fa-solid fa-book"></i></span>
+          <span>arXiv (Coming Soon)</span>
+        </a>
+        <a class="button is-dark is-outlined is-rounded"
+           href="https://github.com/lakshya-asu/Meanings-Measurements-Multi-Agent-Probabilistic-Grounding.git"
+           target="_blank">
+          <span class="icon"><i class="fa-brands fa-github"></i></span>
+          <span>Code</span>
+        </a>
+        <a class="button is-info is-outlined is-rounded"
+           href="https://hub.docker.com/r/flux04/mapg_habitat" target="_blank">
+          <span class="icon"><i class="fa-brands fa-docker"></i></span>
+          <span>Docker</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TEASER -->
+<section class="section">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-10">
+
+        <!-- YouTube embed -->
+        <div class="video-container">
+          <figure class="image is-16by9">
+            <iframe class="has-ratio"
+              src="https://www.youtube.com/embed/zK7Ya-g9eXg"
+              title="MAPG Demo"
+              frameborder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowfullscreen>
+            </iframe>
+          </figure>
+        </div>
+
+        <!-- Hero figure -->
+        <figure>
+          <img class="figure-img"
+               src="figures/figure2-rework-b%20%281%29.png"
+               alt="MAPG pipeline overview" />
+          <figcaption class="figure-caption">
+            MAPG decomposes a natural language instruction into semantic, spatial, and metric
+            components, grounds each with a specialized agent, and composes them probabilistically
+            into a continuous goal distribution for the planner.
+          </figcaption>
+        </figure>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ABSTRACT -->
+<section id="abstract" class="section section-alt">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <h2 class="title is-4 has-text-centered">Abstract</h2>
+        <p>
+          MAPG addresses a core challenge in embodied language grounding: natural language
+          instructions often combine semantic references, spatial relations, and metric constraints.
+          A command such as &#8220;go two meters to the right of the fridge&#8221; is not just
+          object recognition, and not just navigation. It requires resolving a referent, grounding
+          a spatial predicate in 3D, and producing an actionable goal in continuous space. MAPG
+          tackles this by decomposing language into structured components, grounding them with
+          specialized agents, and composing the results probabilistically into planner-ready
+          target distributions.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- METHOD -->
+<section id="method" class="section">
+  <div class="container">
+    <h2 class="title is-4 has-text-centered">Method</h2>
+
+    <div class="columns is-centered">
+      <div class="column is-10">
+        <p style="margin-bottom: 2rem;">
+          MAPG is built around a modular, agentic pipeline. An <strong>Orchestrator</strong>
+          parses a free-form instruction into structured pieces — anchor object, spatial predicate,
+          and metric constraint. <strong>Grounding agents</strong> resolve candidate referents
+          using scene-graph context and visual evidence. <strong>Spatial reasoning modules</strong>
+          convert metric and relational constraints into analytic likelihoods in 3D space.
+          <strong>Probabilistic composition</strong> combines those constraints into a continuous
+          goal distribution. Finally, <strong>planner execution</strong> uses that distribution
+          to choose actionable targets in the scene.
+        </p>
+
+        <!-- Intro figure -->
+        <figure style="margin-bottom: 2.5rem;">
+          <img class="figure-img"
+               src="figures/introfigure-rework%20%281%29.png"
+               alt="MAPG motivating example" />
+          <figcaption class="figure-caption">
+            Motivating example: a metric-semantic instruction that requires simultaneous object
+            grounding, spatial relation resolution, and metric constraint satisfaction.
+          </figcaption>
+        </figure>
+
+        <!-- Overview figure -->
+        <figure>
+          <img class="figure-img"
+               src="figures/overview-horizontal%20%282%29.png"
+               alt="MAPG system overview" />
+          <figcaption class="figure-caption">
+            MAPG system overview. The orchestrator decomposes the instruction; specialized agents
+            ground each component; results are composed probabilistically into a target distribution.
+          </figcaption>
+        </figure>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- RESULTS -->
+<section id="results" class="section section-alt">
+  <div class="container">
+    <h2 class="title is-4 has-text-centered">Qualitative Results</h2>
+    <div class="columns is-centered">
+      <div class="column is-10">
+        <p style="margin-bottom: 2rem;">
+          The following visualizations show MAPG&#8217;s decomposed grounding on a representative
+          scene, illustrating how each component contributes to the final composed goal distribution.
+        </p>
+
+        <div class="columns is-multiline">
+
+          <div class="column is-half is-full-mobile">
+            <figure>
+              <img class="figure-img"
+                   src="figures/fridge_semantic%20%281%29.png"
+                   alt="Semantic Grounding" />
+            </figure>
+            <p class="result-label">Semantic Grounding</p>
+          </div>
+
+          <div class="column is-half is-full-mobile">
+            <figure>
+              <img class="figure-img"
+                   src="figures/fridge_spatial%20%281%29.png"
+                   alt="Spatial Reasoning" />
+            </figure>
+            <p class="result-label">Spatial Reasoning</p>
+          </div>
+
+          <div class="column is-half is-full-mobile">
+            <figure>
+              <img class="figure-img"
+                   src="figures/fridge_metric%20%281%29.png"
+                   alt="Metric Constraint" />
+            </figure>
+            <p class="result-label">Metric Constraint</p>
+          </div>
+
+          <div class="column is-half is-full-mobile">
+            <figure>
+              <img class="figure-img"
+                   src="figures/fridge_composed%20%281%29.png"
+                   alt="Composed Distribution" />
+            </figure>
+            <p class="result-label">Composed Distribution</p>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BIBTEX -->
+<section id="bibtex" class="section">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <h2 class="title is-4 has-text-centered">BibTeX</h2>
+        <pre class="bibtex-block"><code>@article{2025mapg,
+  title     = {Meanings and Measurements: Multi-Agent Probabilistic Grounding for Vision-Language Navigation},
+  author    = {Padhan, Swagat and Jain, Lakshya and Shah, Bhavya and Patil, Omkar and Nguyen, Thao and Gopalan, Nakul},
+  year      = {2025},
+  note      = {Preprint}
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="content has-text-centered">
+    <p>
+      Website template inspired by
+      <a href="https://nerfies.github.io" target="_blank">Nerfies</a>.
+      Source code available on
+      <a href="https://github.com/lakshya-asu/Meanings-Measurements-Multi-Agent-Probabilistic-Grounding.git"
+         target="_blank">GitHub</a>.
+    </p>
+  </div>
+</footer>
 
   <script src="static/js/index.js"></script>
 </body>
