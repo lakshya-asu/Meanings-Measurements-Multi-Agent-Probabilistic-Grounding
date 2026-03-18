@@ -1,0 +1,188 @@
+---
+total_semantic_labels: 92
+dynamic_labels: []
+invalid_labels: [0, 16]
+object_labels:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 15
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  - 22
+  - 23
+  - 24
+  - 25
+  - 26
+  - 27
+  - 28
+  - 29
+  - 30
+  - 31
+  - 32
+  - 33
+  - 34
+  - 35
+  - 36
+  - 37
+  - 38
+  - 39
+  - 40
+  - 41
+  - 42
+  - 43
+  - 44
+  - 45
+  - 46
+  - 47
+  - 48
+  - 49
+  - 50
+  - 51
+  - 52
+  - 53
+  - 54
+  - 55
+  - 56
+  - 57
+  - 58
+  - 59
+  - 60
+  - 61
+  - 62
+  - 63
+  - 64
+  - 65
+  - 66
+  - 67
+  - 68
+  - 69
+  - 70
+  - 71
+  - 72
+  - 73
+  - 74
+  - 75
+  - 76
+  - 77
+  - 78
+  - 79
+  - 80
+  - 81
+  - 82
+  - 83
+  - 84
+  - 85
+  - 86
+  - 87
+  - 88
+  - 89
+  - 90
+  - 91
+surface_places_labels: [14]
+label_names:
+  - {label: 0, name: Unknown}
+  - {label: 1, name: ceiling}
+  - {label: 2, name: ceiling lamp}
+  - {label: 3, name: ceiling molding}
+  - {label: 4, name: picture}
+  - {label: 5, name: table lamp}
+  - {label: 6, name: decorative plant}
+  - {label: 7, name: heater}
+  - {label: 8, name: wall}
+  - {label: 9, name: decoration}
+  - {label: 10, name: fireplace}
+  - {label: 11, name: door frame}
+  - {label: 12, name: door}
+  - {label: 13, name: window curtain}
+  - {label: 14, name: floor}
+  - {label: 15, name: rug}
+  - {label: 16, name: unknown}
+  - {label: 17, name: cabinet}
+  - {label: 18, name: coffee table}
+  - {label: 19, name: vase}
+  - {label: 20, name: shelf}
+  - {label: 21, name: tv}
+  - {label: 22, name: tv stand}
+  - {label: 23, name: pillow}
+  - {label: 24, name: l-shaped sofa}
+  - {label: 25, name: dinner table}
+  - {label: 26, name: dinner chair}
+  - {label: 27, name: mirror}
+  - {label: 28, name: fuse box}
+  - {label: 29, name: coat rack}
+  - {label: 30, name: telephone}
+  - {label: 31, name: display table}
+  - {label: 32, name: bath utensil}
+  - {label: 33, name: vent}
+  - {label: 34, name: bathtub utensil}
+  - {label: 35, name: faucet}
+  - {label: 36, name: bathtub}
+  - {label: 37, name: sink}
+  - {label: 38, name: bathroom cabinet}
+  - {label: 39, name: bathroom utensil}
+  - {label: 40, name: countertop}
+  - {label: 41, name: paper towel}
+  - {label: 42, name: toilet brush}
+  - {label: 43, name: trash can}
+  - {label: 44, name: toilet}
+  - {label: 45, name: bidet}
+  - {label: 46, name: cosmetic}
+  - {label: 47, name: flower vase}
+  - {label: 48, name: wall clock}
+  - {label: 49, name: refrigerator}
+  - {label: 50, name: fire extinguisher}
+  - {label: 51, name: kitchen countertop item}
+  - {label: 52, name: kitchen utensil}
+  - {label: 53, name: kitchen extractor}
+  - {label: 54, name: paper towel dispenser}
+  - {label: 55, name: microwave}
+  - {label: 56, name: oven}
+  - {label: 57, name: kitchen cabinet}
+  - {label: 58, name: kitchen lower cabinet}
+  - {label: 59, name: kitchen top}
+  - {label: 60, name: dining table}
+  - {label: 61, name: dining chair}
+  - {label: 62, name: handle}
+  - {label: 63, name: washing machine}
+  - {label: 64, name: wardrobe}
+  - {label: 65, name: board}
+  - {label: 66, name: door window}
+  - {label: 67, name: chest of drawers}
+  - {label: 68, name: cuddly toy}
+  - {label: 69, name: chair}
+  - {label: 70, name: bed}
+  - {label: 71, name: bouquet}
+  - {label: 72, name: bag}
+  - {label: 73, name: table cloth}
+  - {label: 74, name: bedside lamp}
+  - {label: 75, name: nightstand}
+  - {label: 76, name: table}
+  - {label: 77, name: toilet paper dispenser}
+  - {label: 78, name: laundry basket}
+  - {label: 79, name: window glass}
+  - {label: 80, name: window frame}
+  - {label: 81, name: cosmetics}
+  - {label: 82, name: shower rail}
+  - {label: 83, name: trashcan}
+  - {label: 84, name: plant}
+  - {label: 85, name: shower cabin}
+  - {label: 86, name: casket}
+  - {label: 87, name: statue}
+  - {label: 88, name: basket of something}
+  - {label: 89, name: doll}
+  - {label: 90, name: toy}
+  - {label: 91, name: clutter}

@@ -1,0 +1,350 @@
+---
+total_semantic_labels: 172
+dynamic_labels: []
+invalid_labels: []
+object_labels:
+  - '0'
+  - '1'
+  - '2'
+  - '3'
+  - '4'
+  - '5'
+  - '6'
+  - '7'
+  - '8'
+  - '9'
+  - '10'
+  - '11'
+  - '12'
+  - '13'
+  - '14'
+  - '15'
+  - '16'
+  - '17'
+  - '18'
+  - '19'
+  - '20'
+  - '21'
+  - '22'
+  - '23'
+  - '24'
+  - '25'
+  - '26'
+  - '27'
+  - '28'
+  - '29'
+  - '30'
+  - '31'
+  - '32'
+  - '33'
+  - '34'
+  - '35'
+  - '36'
+  - '37'
+  - '38'
+  - '39'
+  - '40'
+  - '41'
+  - '42'
+  - '43'
+  - '44'
+  - '45'
+  - '46'
+  - '47'
+  - '48'
+  - '49'
+  - '50'
+  - '51'
+  - '52'
+  - '53'
+  - '54'
+  - '55'
+  - '56'
+  - '57'
+  - '58'
+  - '59'
+  - '60'
+  - '61'
+  - '62'
+  - '63'
+  - '64'
+  - '65'
+  - '66'
+  - '67'
+  - '68'
+  - '69'
+  - '70'
+  - '71'
+  - '72'
+  - '73'
+  - '74'
+  - '75'
+  - '76'
+  - '77'
+  - '78'
+  - '79'
+  - '80'
+  - '81'
+  - '82'
+  - '83'
+  - '84'
+  - '85'
+  - '86'
+  - '87'
+  - '88'
+  - '89'
+  - '90'
+  - '91'
+  - '92'
+  - '93'
+  - '94'
+  - '95'
+  - '96'
+  - '97'
+  - '98'
+  - '99'
+  - '100'
+  - '101'
+  - '102'
+  - '103'
+  - '104'
+  - '105'
+  - '106'
+  - '107'
+  - '108'
+  - '109'
+  - '110'
+  - '111'
+  - '112'
+  - '113'
+  - '114'
+  - '115'
+  - '116'
+  - '117'
+  - '118'
+  - '119'
+  - '120'
+  - '121'
+  - '122'
+  - '123'
+  - '124'
+  - '125'
+  - '126'
+  - '127'
+  - '128'
+  - '129'
+  - '130'
+  - '131'
+  - '132'
+  - '133'
+  - '134'
+  - '135'
+  - '136'
+  - '137'
+  - '138'
+  - '139'
+  - '140'
+  - '141'
+  - '142'
+  - '143'
+  - '144'
+  - '145'
+  - '146'
+  - '147'
+  - '148'
+  - '149'
+  - '150'
+  - '151'
+  - '152'
+  - '153'
+  - '154'
+  - '155'
+  - '156'
+  - '157'
+  - '158'
+  - '159'
+  - '160'
+  - '161'
+  - '163'
+  - '164'
+  - '165'
+  - '166'
+  - '167'
+  - '168'
+  - '169'
+  - '170'
+  - '171'
+surface_places_labels: [162]
+label_names:
+  - {label: 0, name: .}
+  - {label: 1, name: action_figure}
+  - {label: 2, name: android_figure}
+  - {label: 3, name: apple}
+  - {label: 4, name: backpack}
+  - {label: 5, name: baseballbat}
+  - {label: 6, name: basket}
+  - {label: 7, name: basketball}
+  - {label: 8, name: bath_towel}
+  - {label: 9, name: battery_charger}
+  - {label: 10, name: board_game}
+  - {label: 11, name: book}
+  - {label: 12, name: bottle}
+  - {label: 13, name: bowl}
+  - {label: 14, name: box}
+  - {label: 15, name: bread}
+  - {label: 16, name: bundt_pan}
+  - {label: 17, name: butter_dish}
+  - {label: 18, name: c-clamp}
+  - {label: 19, name: cake_pan}
+  - {label: 20, name: can}
+  - {label: 21, name: can_opener}
+  - {label: 22, name: candle}
+  - {label: 23, name: candle_holder}
+  - {label: 24, name: candy_bar}
+  - {label: 25, name: canister}
+  - {label: 26, name: carrying_case}
+  - {label: 27, name: casserole}
+  - {label: 28, name: cellphone}
+  - {label: 29, name: clock}
+  - {label: 30, name: credit_card}
+  - {label: 31, name: cup}
+  - {label: 32, name: cushion}
+  - {label: 33, name: doll}
+  - {label: 34, name: dumbbell}
+  - {label: 35, name: egg}
+  - {label: 36, name: electric_kettle}
+  - {label: 37, name: electronic_cable}
+  - {label: 38, name: file_sorter}
+  - {label: 39, name: folder}
+  - {label: 40, name: fork}
+  - {label: 41, name: gaming_console}
+  - {label: 42, name: glass}
+  - {label: 43, name: hammer}
+  - {label: 44, name: hand_towel}
+  - {label: 45, name: handbag}
+  - {label: 46, name: hard_drive}
+  - {label: 47, name: hat}
+  - {label: 48, name: helmet}
+  - {label: 49, name: jug}
+  - {label: 50, name: kettle}
+  - {label: 51, name: keychain}
+  - {label: 52, name: knife}
+  - {label: 53, name: ladle}
+  - {label: 54, name: lamp}
+  - {label: 55, name: laptop}
+  - {label: 56, name: laptop_cover}
+  - {label: 57, name: laptop_stand}
+  - {label: 58, name: lunch_box}
+  - {label: 59, name: milk_frother_cup}
+  - {label: 60, name: monitor_stand}
+  - {label: 61, name: mouse_pad}
+  - {label: 62, name: multiport_hub}
+  - {label: 63, name: pan}
+  - {label: 64, name: pen}
+  - {label: 65, name: pencil_case}
+  - {label: 66, name: phone_stand}
+  - {label: 67, name: picture_frame}
+  - {label: 68, name: pitcher}
+  - {label: 69, name: plant_container}
+  - {label: 70, name: plant_saucer}
+  - {label: 71, name: plate}
+  - {label: 72, name: potato}
+  - {label: 73, name: ramekin}
+  - {label: 74, name: scissors}
+  - {label: 75, name: screwdriver}
+  - {label: 76, name: shoe}
+  - {label: 77, name: soap_dish}
+  - {label: 78, name: soap_dispenser}
+  - {label: 79, name: spatula}
+  - {label: 80, name: spectacles}
+  - {label: 81, name: spicemill}
+  - {label: 82, name: sponge}
+  - {label: 83, name: spoon}
+  - {label: 84, name: spray_bottle}
+  - {label: 85, name: squeezer}
+  - {label: 86, name: statue}
+  - {label: 87, name: stuffed toy}
+  - {label: 88, name: stuffed_toy}
+  - {label: 89, name: sushi_mat}
+  - {label: 90, name: tape}
+  - {label: 91, name: teapot}
+  - {label: 92, name: tennis_racquet}
+  - {label: 93, name: tissue_box}
+  - {label: 94, name: tomato}
+  - {label: 95, name: toy_airplane}
+  - {label: 96, name: toy_animal}
+  - {label: 97, name: toy_bee}
+  - {label: 98, name: toy_cactus}
+  - {label: 99, name: toy_construction_set}
+  - {label: 100, name: toy_fire_truck}
+  - {label: 101, name: toy_food}
+  - {label: 102, name: toy_fruits}
+  - {label: 103, name: toy_pineapple}
+  - {label: 104, name: toy_swing}
+  - {label: 105, name: toy_vehicle}
+  - {label: 106, name: tray}
+  - {label: 107, name: vase}
+  - {label: 108, name: watch}
+  - {label: 109, name: monitor}
+  - {label: 110, name: television}
+  - {label: 111, name: trash_can}
+  - {label: 112, name: toolbox}
+  - {label: 113, name: red_traffic_cone}
+  - {label: 114, name: wall_decoration}
+  - {label: 115, name: painting}
+  - {label: 116, name: picture}
+  - {label: 117, name: microwave}
+  - {label: 118, name: faucet}
+  - {label: 119, name: utensil}
+  - {label: 120, name: blender}
+  - {label: 121, name: cutting_board}
+  - {label: 122, name: dishwasher}
+  - {label: 123, name: ceiling_lamp}
+  - {label: 124, name: plant}
+  - {label: 125, name: water_pitcher}
+  - {label: 126, name: blanket}
+  - {label: 127, name: bag}
+  - {label: 128, name: bike}
+  - {label: 129, name: ceiling_fan}
+  - {label: 130, name: thermostat}
+  - {label: 131, name: dishes}
+  - {label: 132, name: water_bottle}
+  - {label: 133, name: pot}
+  - {label: 134, name: pumpkin}
+  - {label: 135, name: milk_carton}
+  - {label: 136, name: human}
+  - {label: 137, name: coat_rack}
+  - {label: 138, name: rug}
+  - {label: 139, name: mat}
+  - {label: 140, name: bathtub}
+  - {label: 141, name: bed}
+  - {label: 142, name: bench}
+  - {label: 143, name: cabinet}
+  - {label: 144, name: chair}
+  - {label: 145, name: chest_of_drawers}
+  - {label: 146, name: couch}
+  - {label: 147, name: counter}
+  - {label: 148, name: filing_cabinet}
+  - {label: 149, name: hamper}
+  - {label: 150, name: serving_cart}
+  - {label: 151, name: shelves}
+  - {label: 152, name: shoe_rack}
+  - {label: 153, name: sink}
+  - {label: 154, name: stand}
+  - {label: 155, name: stool}
+  - {label: 156, name: table}
+  - {label: 157, name: toilet}
+  - {label: 158, name: trunk}
+  - {label: 159, name: wardrobe}
+  - {label: 160, name: washer_dryer}
+  - {label: 161, name: wall}
+  - {label: 162, name: floor}
+  - {label: 163, name: ceiling}
+  - {label: 164, name: door}
+  - {label: 165, name: picture_frame}
+  - {label: 166, name: desktop_computer}
+  - {label: 167, name: box}
+  - {label: 168, name: staircase}
+  - {label: 169, name: book_shelf}
+  - {label: 170, name: stove}
+  - {label: 171, name: other}

@@ -1,0 +1,106 @@
+# /home/artemis/project/graph_eqa_swagat/src/cfg/gemini_spatial.yaml
+
+# General
+seed: 42
+exp_name: grapheqa_spatial_${vlm.name} # Changed to reflect spatial experiment
+output_path: outputs_v5/${exp_name}_test # Changed output path
+results_filename: ${vlm.name}_images_${vlm.use_image}
+gpu: 0 
+sim_gpu: 0
+
+# --- DATA: CRITICAL CHANGES ---
+# This section is updated to use the new procedurally generated spatial dataset
+# instead of the old EQA CSV files.
+data:
+  # NEW: Path to the generated spatial questions and ground truth data
+  spatial_data_path: '/root/graph_eqa/src/data/spatial_dataset_region_2_25q.json'
+  
+  # Paths for scene assets remain the same
+  semantic_annot_data_path: '/datasets/hm3d/train'
+  scene_data_path: '/datasets/hm3d/train'
+  use_semantic_data: True
+
+  # REMOVED: EQA-specific paths are no longer needed
+  # question_data_path: '/datasets/explore-eqa/questions.csv'
+  # init_pose_data_path: '/datasets/explore-eqa/scene_init_poses.csv'
+  # explore_eqa_dataset_enrich_labels: 'cfg/explore_eqa_dataset_enrich_labels.yaml'
+
+# --- VLM: CRITICAL CHANGES ---
+# The VLM name is updated to a unique identifier for the spatial task.
+# Your run_spatial_experiment.py script will use this name to load the correct planner.
+vlm:
+  name: "gemini" # Changed to load your new spatial planner
+  use_image: True
+  use_done_action: False
+  early_exit: True
+  add_history: True
+
+# --- The sections below are unchanged as they control the simulation environment ---
+
+logging:
+  output_parent_dir: results
+  save_obs: true
+  save_freq: 1
+
+scene_graph_sim:
+  save_image: ${vlm.use_image}
+  frontier_obj_thresh: 2.0
+  enrich_rooms: True
+  enrich_frontiers: True
+  enrich_objects: False
+  include_regions: False
+  no_scene_graph: False
+  key_frame_selection:
+    use_clip_for_images: False
+    use_siglip_for_images: True
+    topk: 2
+    visualize_best_image: False
+    choose_final_image: False
+  img_subsample_freq: 1
+  
+planner:
+  max_step_room_size_ratio: 3
+  break_at_done: False
+
+habitat:
+  scene_type: 'hm3d'
+  dataset_type: 'train'
+  sim_gpu: ${sim_gpu}
+  inflation_radius: 0.25
+  img_width: 640
+  img_height: 480
+  camera_height: 1.5
+  camera_tilt_deg: -30
+  agent_z_offset: 0.
+  hfov: 120
+  z_offset: 0
+  use_semantic_data: ${data.use_semantic_data}
+  
+hydra:
+  glog_level: 0
+  verbosity: 0
+  label_space: 'hm3d'
+  config_verbosity: 0
+
+frontier_mapping:
+  tsdf_grid_size: 0.1
+  init_clearance: 0.5
+  img_width: ${habitat.img_width}
+  img_height: ${habitat.img_height}
+  margin_w_ratio: 0.25
+  margin_h_ratio: 0.3
+  height_offset: 0.2
+  range_height: [-0.2, 0.2]
+  visual_prompt:
+    cluster_threshold: 1.0
+    num_clusters: 10
+    num_prompt_points: 3
+    num_max_unoccupied: 300
+    min_points_for_clustering: 3
+    point_min_dist: 1
+    point_max_dist: 10
+    cam_offset: 0.6
+    min_num_prompt_points: 2
+    circle_radius: 18
+    frontier_min_neighbors: 2
+    frontier_max_neighbors: 3

@@ -1,0 +1,135 @@
+FROM nvidia/cuda:12.4.1-devel-ubuntu20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+ENV PATH=/root/miniforge3/envs/grapheqa/bin:/root/miniforge3/bin:${PATH}
+ENV CONDA_DEFAULT_ENV=grapheqa
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    locales \
+    curl \
+    gnupg2 \
+    lsb-release \
+    git \
+    build-essential \
+    wget \
+    software-properties-common \
+    libpcl-dev \
+    libboost-all-dev \
+    libeigen3-dev \
+    libgoogle-glog-dev \
+    libzmqpp-dev \
+    nlohmann-json3-dev \
+    python3-dev \
+    python3-pip \
+    python-is-python3 \
+    libjpeg-dev \
+    libglm-dev \
+    libgl1-mesa-glx \
+    libegl1-mesa-dev \
+    mesa-utils \
+    xorg-dev \
+    freeglut3-dev \
+    vim \
+    iputils-ping \
+    ca-certificates \
+    && locale-gen en_US.UTF-8 \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - \
+    && sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list' \
+    && add-apt-repository universe \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    ros-noetic-desktop-full \
+    ros-noetic-gtsam \
+    python3-rosdep \
+    python3-catkin-tools \
+    python3-vcstool \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rosdep init && rosdep update
+
+RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
+
+RUN mkdir -p /catkin_ws/src \
+    && cd /catkin_ws \
+    && catkin init \
+    && catkin config -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    && cd src \
+    && git clone -b grapheqa https://github.com/TechTinkerPradhan/Hydra ./hydra \
+    && sed -i -E 's|git@github\.com:(.*)\.git|https://github.com/\1.git|g' hydra/install/hydra.rosinstall \
+    && vcs import . < hydra/install/hydra.rosinstall
+
+WORKDIR /catkin_ws
+
+RUN source /opt/ros/noetic/setup.bash \
+    && cd src \
+    && rosdep install --from-paths . --ignore-src -r -y --rosdistro=noetic
+
+RUN source /opt/ros/noetic/setup.bash \
+    && catkin build
+
+WORKDIR /root
+
+RUN curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh" \
+    && bash Miniforge3-$(uname)-$(uname -m).sh -b \
+    && rm Miniforge3-$(uname)-$(uname -m).sh \
+    && conda init bash \
+    && mamba create -n grapheqa python=3.10 -y
+
+WORKDIR /catkin_ws
+
+RUN source activate grapheqa \
+    && source /opt/ros/noetic/setup.bash \
+    && export CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+    && pip install "src/spark_dsg[viz]"
+
+WORKDIR /catkin_ws/src/hydra
+
+RUN source /catkin_ws/devel/setup.bash \
+    && source activate grapheqa \
+    && export CMAKE_FLAGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+    && pip install setuptools==69.5.1 \
+    && pip install -r python/build_requirements.txt \
+    && export CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+    && pip install --no-build-isolation -e .
+
+WORKDIR /root
+
+RUN source activate grapheqa \
+    && git clone --branch stable https://github.com/facebookresearch/habitat-sim.git
+
+WORKDIR /root/habitat-sim
+
+RUN source activate grapheqa \
+    && export CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+    && python setup.py install --headless --bullet
+
+WORKDIR /opt/grapheqa-src
+
+COPY . /opt/grapheqa-src
+
+RUN source activate grapheqa \
+    && pip install --upgrade pip \
+    && pip install -e . \
+    && pip install \
+    numpy-quaternion \
+    pandas \
+    click \
+    tqdm \
+    wandb \
+    torch \
+    torchvision
+
+RUN source activate grapheqa \
+    && python -c "from transformers import AutoModel; AutoModel.from_pretrained('google/siglip-so400m-patch14-384')"
+
+RUN echo "source /catkin_ws/devel/setup.bash" >> /root/.bashrc \
+    && echo "conda activate grapheqa" >> /root/.bashrc
+
+WORKDIR /workspace
+
+CMD ["bash"]

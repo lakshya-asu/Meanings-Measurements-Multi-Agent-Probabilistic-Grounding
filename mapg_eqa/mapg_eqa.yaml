@@ -1,0 +1,90 @@
+# General
+seed: 42
+exp_name: mapg_eqa_agent
+output_path: outputs_eqa_final/${exp_name}_test_run
+results_filename: ${vlm.name}_images_${vlm.use_image}
+gpu: 0 
+sim_gpu: 0
+
+data:
+  question_data_path: '/datasets/explore-eqa/eqa-questions.csv'
+  init_pose_data_path: '/datasets/explore-eqa/scene_init_poses.csv'
+  semantic_annot_data_path: '/datasets/hm3d/train'
+  scene_data_path: '/datasets/hm3d/train'
+  explore_eqa_dataset_enrich_labels: 'cfg/explore_eqa_dataset_enrich_labels.yaml'
+  use_semantic_data: True
+
+logging:
+  output_parent_dir: results_eqa_final
+  save_obs: true
+  save_freq: 10
+
+scene_graph_sim:
+  save_image: ${vlm.use_image}
+  frontier_obj_thresh: 2.0
+  enrich_rooms: True
+  enrich_frontiers: True
+  enrich_objects: False
+  include_regions: False
+  no_scene_graph: False 
+  key_frame_selection:
+    use_clip_for_images: False
+    use_siglip_for_images: True
+    topk: 2
+    visualize_best_image: False
+    choose_final_image: True
+  img_subsample_freq: 2
+  
+vlm:
+  name: "claude-4.6-opus" # The agent explicitly checks for "mapg" or "claude" and defaults to 4.6 inside the agent code.
+  use_image: True
+  use_done_action: False
+  early_exit: True
+  add_history: True
+
+planner:
+  max_step_room_size_ratio: 3
+  break_at_done: False
+
+habitat:
+  scene_type: 'hm3d'
+  dataset_type: 'train'
+  sim_gpu: ${sim_gpu}
+  inflation_radius: 0.25
+  img_width: 640
+  img_height: 480
+  camera_height: 1.5
+  camera_tilt_deg: -30
+  agent_z_offset: 0.
+  hfov: 120
+  z_offset: 0
+  use_semantic_data: ${data.use_semantic_data}
+  
+hydra:
+  glog_level: 0
+  verbosity: 0
+  label_space: 'hm3d'
+  config_verbosity: 0
+
+frontier_mapping:
+  tsdf_grid_size: 0.1
+  init_clearance: 0.5
+  img_width: ${habitat.img_width}
+  img_height: ${habitat.img_height}
+  margin_w_ratio: 0.25
+  margin_h_ratio: 0.3
+  height_offset: 0.2 
+  range_height: [-0.2, 0.2]
+  visual_prompt:
+    cluster_threshold: 1.0
+    num_clusters: 10
+    num_prompt_points: 3
+    num_max_unoccupied: 300
+    min_points_for_clustering: 3
+    point_min_dist: 1
+    point_max_dist: 10
+    cam_offset: 0.6
+    min_num_prompt_points: 2
+    circle_radius: 18
+    frontier_min_neighbors: 2
+    frontier_max_neighbors: 3
