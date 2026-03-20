@@ -126,15 +126,56 @@
       <div class="column is-8">
         <h2 class="title is-4 has-text-centered">Abstract</h2>
         <p>
-          MAPG addresses a core challenge in embodied language grounding: natural language
-          instructions often combine semantic references, spatial relations, and metric constraints.
-          A command such as &#8220;go two meters to the right of the fridge&#8221; is not just
-          object recognition, and not just navigation. It requires resolving a referent, grounding
-          a spatial predicate in 3D, and producing an actionable goal in continuous space. MAPG
-          tackles this by decomposing language into structured components, grounding them with
-          specialized agents, and composing the results probabilistically into planner-ready
-          target distributions.
+          Robots collaborating with humans need to convert natural language goals into actionable,
+          physically grounded decisions. A command like "go two meters to the right of the fridge"
+          requires grounding a semantic reference, a spatial relation, and a metric constraint
+          all at once, inside a 3D scene. While recent vision-language models (VLMs) are strong
+          at semantic grounding, they are not designed to handle metric constraints in physically
+          defined spaces. We empirically show that state-of-the-art VLM-based grounding approaches
+          struggle on complex metric-semantic queries.
         </p>
+        <br>
+        <p>
+          To address this, we propose MAPG (Multi-Agent Probabilistic Grounding), an agentic
+          framework that decomposes language queries into structured subcomponents and queries a
+          VLM to ground each one. MAPG then probabilistically composes these grounded outputs to
+          produce metrically consistent, actionable decisions in 3D space. We evaluate MAPG on
+          the HM-EQA benchmark and show consistent performance improvements over strong baselines.
+          We also introduce MAPG-Bench, a new benchmark specifically designed to evaluate
+          metric-semantic goal grounding, covering 30 indoor scenes and 100 annotated queries.
+          Finally, we present a real-world robot demonstration showing that MAPG transfers
+          beyond simulation when a structured scene representation is available.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CONTRIBUTIONS -->
+<section class="section">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <h2 class="title is-4 has-text-centered">Contributions</h2>
+        <ul style="list-style: disc; padding-left: 1.5rem; line-height: 2;">
+          <li>
+            <strong>A multi-agent probabilistic 3D spatial reasoning framework</strong> that couples
+            online 3D scene graphs with analytically defined continuous spatial kernels to produce
+            planner-ready goal distributions for metric-semantic instructions.
+          </li>
+          <li>
+            <strong>MAPG-Bench</strong>, a first-of-its-kind HM3D goal grounding benchmark for
+            metric-semantic queries, with an open-source dataset and evaluation protocol spanning
+            30 unique indoor scenes and 100 annotated queries designed for object-to-world goal
+            grounding in realistic indoor layouts.
+          </li>
+          <li>
+            <strong>Empirical findings and ablations</strong> showing our method achieves low
+            distance error (0.07 m) and low angular errors (0.3 degree yaw, 3.8 degree pitch) in
+            goal grounding, along with a failure taxonomy covering failure mode categories for
+            reproducible comparison with future goal-grounding systems.
+          </li>
+        </ul>
       </div>
     </div>
   </div>
@@ -147,16 +188,48 @@
 
     <div class="columns is-centered">
       <div class="column is-10">
-        <p style="margin-bottom: 2rem;">
-          MAPG is built around a modular, agentic pipeline. An <strong>Orchestrator</strong>
-          parses a free-form instruction into structured pieces — anchor object, spatial predicate,
-          and metric constraint. <strong>Grounding agents</strong> resolve candidate referents
-          using scene-graph context and visual evidence. <strong>Spatial reasoning modules</strong>
-          convert metric and relational constraints into analytic likelihoods in 3D space.
-          <strong>Probabilistic composition</strong> combines those constraints into a continuous
-          goal distribution. Finally, <strong>planner execution</strong> uses that distribution
-          to choose actionable targets in the scene.
+        <p style="margin-bottom: 1.5rem;">
+          MAPG is built around a modular pipeline of specialized agents that share a common
+          memory ledger and operate over a 3D scene graph of the environment. Given a natural
+          language instruction, the system decomposes it, resolves referents, generates spatial
+          distributions, and composes them into a single planner-ready goal density.
         </p>
+
+        <div class="content" style="margin-bottom: 2rem;">
+          <p>
+            <strong>1. Orchestrator.</strong> The Orchestrator parses a free-form instruction
+            into structured Spatial Description Clauses (SDCs): an anchor object, a spatial
+            predicate (e.g., "right of"), and a metric constraint (e.g., "2 meters"). For the
+            query "Where is 2 meters to the right of the fridge?", it extracts
+            <code>anchor: fridge, predicate: right-of, metric: 2.0 m</code>. These clauses
+            are passed to the Grounding and Spatial agents for referent resolution and
+            distribution generation.
+          </p>
+          <p>
+            <strong>2. Grounding Agent.</strong> The Grounding Agent resolves each anchor
+            referent to a concrete object instance in the 3D scene graph. It uses a combination
+            of string similarity between the referent text and node labels, CLIP-based visual
+            similarity between the referent and object image crops, and a spatial salience prior
+            based on proximity and visibility. A belief distribution over referents is maintained
+            on the shared memory ledger and updated as new observations arrive.
+          </p>
+          <p>
+            <strong>3. Spatial Agent.</strong> Once a referent is resolved, the Spatial Agent
+            generates a continuous probability density function over 3D space representing where
+            the goal is likely to be. Directional predicates (e.g., "right of") are modeled as
+            von Mises or radial Gaussian kernels anchored to the resolved object's pose.
+            Metric constraints are modeled as radial Gaussians centered at the predicted
+            distance offset. These analytic kernels are composed by multiplying and renormalizing
+            in log-space, producing a single composed goal distribution.
+          </p>
+          <p>
+            <strong>4. Verifier and Planner.</strong> A Verifier checks the composed distribution
+            for coherence and can trigger corrective retries if needed. The final composed
+            distribution is passed directly to a sampling-based planner (RRT*), which extracts
+            the top-k waypoints as executable navigation targets. This makes the output
+            directly usable by a motion planner without any additional interpretation.
+          </p>
+        </div>
 
         <!-- Intro figure -->
         <figure style="margin-bottom: 2.5rem;">
@@ -188,12 +261,45 @@
 <!-- RESULTS -->
 <section id="results" class="section section-alt">
   <div class="container">
-    <h2 class="title is-4 has-text-centered">Qualitative Results</h2>
+    <h2 class="title is-4 has-text-centered">Results</h2>
     <div class="columns is-centered">
       <div class="column is-10">
+
+        <p style="margin-bottom: 1.5rem;">
+          We evaluate MAPG on two benchmarks: <strong>MAPG-Bench</strong>, our new metric-semantic
+          goal grounding benchmark, and <strong>HM-EQA</strong>, a standard embodied question
+          answering benchmark. On MAPG-Bench, MAPG is compared against open-sourced specialist
+          models (SRGPT, GraphEQA) and proprietary generalist VLMs across several variants
+          (Gemini 3 Pro, OpenAI GPT 5.2, Gemini 2.5 Pro, Claude Opus 4.6).
+        </p>
+
+        <p style="margin-bottom: 1.5rem;">
+          Our best MAPG variant (Claude Opus 4.6) reduces the object-to-world localization error
+          from <strong>5.82 m down to 0.07 m</strong> (a 98.8% reduction), yaw error from
+          13.5 degrees to 0.3 degrees (85.9% reduction), and pitch error from 27.9 degrees to
+          3.8 degrees (84.2% reduction), while achieving a Task Success Rate of 0.98 and
+          an Anchor Pick Success Rate of 0.98. These gains are primarily structural: removing
+          the explicit spatial reasoner drops object-selection success rate from 0.42 to 0.20,
+          confirming that explicit decomposition and composition are the primary drivers,
+          not just better prompting.
+        </p>
+
         <p style="margin-bottom: 2rem;">
-          The following visualizations show MAPG&#8217;s decomposed grounding on a representative
-          scene, illustrating how each component contributes to the final composed goal distribution.
+          On HM-EQA question answering, MAPG (Claude 4.6 Opus) reaches a task success rate
+          of 0.71, outperforming all compared baselines including GraphEQA-Gemini-2.5Pro at 0.67.
+          We also ran a real-world robot demo using a Robotis AI Worker robot, constructing a
+          scene graph from a physical indoor environment and running MAPG inference on spatial
+          queries. MAPG successfully grounded the queried targets, showing the approach
+          transfers beyond simulation.
+        </p>
+
+        <h3 class="title is-5" style="margin-bottom: 1rem;">Decomposed Grounding Visualizations</h3>
+        <p style="margin-bottom: 2rem;">
+          The figures below show how each component of MAPG contributes to the final composed
+          goal distribution for the query "Where is 2 meters to the right of the fridge?"
+          Semantic grounding identifies the fridge, the metric kernel models the 2 m offset,
+          the directional kernel captures "right of," and their composition yields a
+          planner-ready goal distribution.
         </p>
 
         <div class="columns is-multiline">
