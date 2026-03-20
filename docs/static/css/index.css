@@ -30,6 +30,20 @@ h1, h2, h3, .title, .subtitle {
   color: #fff;
 }
 
+/* arXiv / Paper merged button */
+.arxiv-btn {
+  background-color: #b31b1b;
+  border-color: #b31b1b;
+  color: #fff;
+  font-weight: 600;
+}
+.arxiv-btn:hover,
+.arxiv-btn:focus {
+  background-color: #8a1414;
+  border-color: #8a1414;
+  color: #fff;
+}
+
 .button.is-rounded {
   margin: 0.25rem;
 }
