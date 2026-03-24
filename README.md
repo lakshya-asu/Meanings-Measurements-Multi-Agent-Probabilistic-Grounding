@@ -11,8 +11,8 @@
   <a href="./Meanings%20and%20Measurements.pdf">
     <img src="https://img.shields.io/badge/Paper-PDF-blue?style=for-the-badge&logo=adobeacrobatreader" alt="Paper PDF" />
   </a>
-  <a href="#">
-    <img src="https://img.shields.io/badge/arXiv-coming_soon-b31b1b?style=for-the-badge&logo=arxiv" alt="arXiv placeholder" />
+  <a href="https://arxiv.org/abs/2603.19166">
+    <img src="https://img.shields.io/badge/arXiv-2603.19166-b31b1b?style=for-the-badge&logo=arxiv" alt="arXiv placeholder" />
   </a>
   <a href="https://hub.docker.com/r/flux04/mapg_habitat">
     <img src="https://img.shields.io/badge/Docker-flux04%2Fmapg__habitat-2496ED?style=for-the-badge&logo=docker" alt="Docker image" />
@@ -41,7 +41,7 @@ The repository includes the current MAPG Habitat workflow, benchmarking code, mu
 ## Paper
 
 - Paper PDF: [Meanings and Measurements.pdf](./Meanings%20and%20Measurements.pdf)
-- arXiv: coming soon
+- arXiv: https://arxiv.org/abs/2603.19166
 - Project page: https://lakshya-asu.github.io/Meanings-Measurements-Multi-Agent-Probabilistic-Grounding/
 
 ## What This Repo Contains
