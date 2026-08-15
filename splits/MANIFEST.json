@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "date_frozen": "2026-08-15",
+  "splits": {
+    "bench_v1_98": {
+      "name": "bench_v1_98",
+      "path": "splits/bench_v1_98.csv",
+      "sha256": "ae3e2429eb08876577f1d871c0108252cc236fa53bf2c6985f1f70f1755e1a8f",
+      "rows": 98,
+      "scenes": 41,
+      "source": "datasets/explore-eqa/final files/questions_msp_eval_combined_100.csv",
+      "source_sha256": "ae3e2429eb08876577f1d871c0108252cc236fa53bf2c6985f1f70f1755e1a8f",
+      "date_frozen": "2026-08-15",
+      "frozen": true
+    }
+  }
+}
