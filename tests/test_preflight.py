@@ -26,10 +26,12 @@ from src.scripts.preflight import (
 class TestResolveDataPath:
     def test_datasets_path_remaps_to_repo_when_container_path_absent(self, monkeypatch):
         monkeypatch.delenv("MAPG_DATA_ROOT", raising=False)
-        # /datasets does not exist on the host, so the path must remap.
-        assert not os.path.exists("/datasets/explore-eqa")
-        out = resolve_data_path("/datasets/explore-eqa/foo.csv")
-        assert out == str(REPO_ROOT / "datasets" / "explore-eqa" / "foo.csv")
+        # Use a path that exists nowhere, host or container, so the
+        # remap branch is exercised in both environments.
+        missing = "/datasets/__no_such_dir__/foo.csv"
+        assert not os.path.exists("/datasets/__no_such_dir__")
+        out = resolve_data_path(missing)
+        assert out == str(REPO_ROOT / "datasets" / "__no_such_dir__" / "foo.csv")
 
     def test_env_override_wins(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MAPG_DATA_ROOT", str(tmp_path))
