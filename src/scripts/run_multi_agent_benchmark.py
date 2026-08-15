@@ -35,6 +35,11 @@ import hydra_python
 # --- NEW: Multi-Agent MSP Planner ---
 from src.planners.multi_agent_msp_planner import MultiAgentMSPPlanner
 
+# Gate 4 results store: SQLite rows + run manifest (legacy JSON stays).
+from src.results.store import ResultsStore
+from src.results.manifest import build_manifest, write_manifest
+from src.schema.prediction import normalize_prediction
+
 SEM_LIST = "/datasets/hm3d/train/train-semantic-annots-files.json"
 with open(SEM_LIST) as f:
     _semantic_ok = set()
@@ -178,6 +183,18 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
     os.makedirs(str(output_path), exist_ok=True)
     results_filename = output_path / f"{cfg.results_filename}_multi_agent.json"
     device = f"cuda:{cfg.gpu}" if torch.cuda.is_available() else "cpu"
+
+    # Gate 4: run manifest + SQLite results store. The legacy JSON status
+    # logging below stays in place; this writes in parallel.
+    run_seed = int(_cfg_get(cfg, "seed", 0) or 0)
+    run_split = str(_cfg_get(cfg, "split", "unknown") or "unknown")
+    run_method = "multi_agent"
+    run_backend = str(_cfg_get(cfg.vlm, "name", "unknown") or "unknown")
+    run_manifest = build_manifest(cfg, seed=run_seed, split_name=run_split)
+    results_store = ResultsStore(output_path / "results.sqlite")
+    run_id = results_store.start_run(run_manifest)
+    write_manifest(run_manifest, output_path)
+    run_status = "aborted"
 
     segmenter = None if cfg.data.use_semantic_data else hydra_python.detection.detic_segmenter.DeticSegmenter(cfg)
 
@@ -402,6 +419,21 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                 "anchor_found": bool(anchor_found),
             })
 
+            # Gate 4: one row per episode into the SQLite store, with the
+            # final prediction normalized so target_point_xyz is populated.
+            norm_pred = normalize_prediction(final_pred if final_pred is not None else {})
+            store_row = dict(per_episode_metrics[-1])
+            store_row.update({
+                "qid": experiment_id,
+                "method": run_method,
+                "backend": run_backend,
+                "split": run_split,
+                "seed": run_seed,
+                "final_pred": norm_pred,
+                "target_point_xyz": norm_pred.get("target_point_xyz"),
+            })
+            results_store.record_episode(run_id, store_row)
+
             total_traj_length += traj_length
             if succ: total_success += 1
 
@@ -442,7 +474,16 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                 traces_table = wandb.Table(columns=["question_index", "experiment_id", "scene", "floor", "msp_question", "ground_truth", "success", "final_confidence", "blackboard_log", "image"], data=episode_traces_rows)
                 wandb.log({"episode_traces": traces_table})
 
+        # Gate 4: the loop finished without crashing.
+        run_status = "complete"
+
     finally:
+        # Gate 4: close out the run record with its final status.
+        try:
+            results_store.finish_run(run_id, run_status)
+            results_store.close()
+        except Exception:
+            pass
         try: wandb.finish()
         except Exception: pass
 
