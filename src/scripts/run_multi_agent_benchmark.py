@@ -39,6 +39,7 @@ from src.planners.multi_agent_msp_planner import MultiAgentMSPPlanner
 from src.results.store import ResultsStore
 from src.results.manifest import build_manifest, write_manifest
 from src.schema.prediction import normalize_prediction
+from src.evals.success import score_episode
 
 from src.paths import resolve_data_path
 
@@ -443,6 +444,14 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                 "final_pred": norm_pred,
                 "target_point_xyz": norm_pred.get("target_point_xyz"),
             })
+            # Item 5: GT-checked success. The legacy "success" flag is only
+            # self-reported VLM confidence (is_conf or conf > 0.9), never
+            # checked against GT; it is renamed self_reported_conf_success.
+            # The old "success" key stays too for one transition period,
+            # after which readers must use self_reported_conf_success or
+            # the GT-checked success_gt_* fields.
+            store_row["self_reported_conf_success"] = bool(succ)
+            store_row.update(score_episode(norm_pred, q))
             results_store.record_episode(run_id, store_row)
 
             total_traj_length += traj_length

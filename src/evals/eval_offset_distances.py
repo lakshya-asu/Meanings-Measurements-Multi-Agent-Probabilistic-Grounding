@@ -10,14 +10,18 @@ import pandas as pd
 
 try:
     from src.schema.prediction import normalize_prediction
+    from src.evals.success import euclidean_error, horizontal_error
 except ImportError:
     # Allow running this script from anywhere, not just the repo root.
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from src.schema.prediction import normalize_prediction
+    from src.evals.success import euclidean_error, horizontal_error
 
 
 def _euclid(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.linalg.norm(a - b))
+    # Shared implementation with the online path (item 5): one
+    # implementation per metric lives in src/evals/success.py.
+    return euclidean_error(a, b)
 
 
 def _safe_float(x) -> Optional[float]:
@@ -158,11 +162,18 @@ def main():
             pred, pred_kind = _extract_pred_xyz(jentry)
 
         error_m = None
+        d_h_m = None
         anchor_to_pred_m = None
         anchor_to_gt_m = None
 
         if pred is not None:
+            # error_m is the 3D Euclidean distance d_3 (secondary column);
+            # d_h_m is the horizontal distance d_h that the preregistered
+            # primary endpoint SR@1.0m thresholds (y projected out,
+            # Habitat y-up convention). Both come from src/evals/success.py
+            # so the offline and online paths share one implementation.
             error_m = _euclid(pred, gt)
+            d_h_m = horizontal_error(pred, gt)
 
         if anchor is not None:
             anchor_to_gt_m = _euclid(anchor, gt)
@@ -194,6 +205,7 @@ def main():
                 "pred_y": float(pred[1]) if pred is not None else np.nan,
                 "pred_z": float(pred[2]) if pred is not None else np.nan,
                 "error_m": error_m if error_m is not None else np.nan,
+                "d_h_m": d_h_m if d_h_m is not None else np.nan,
                 "anchor_x": float(anchor[0]) if anchor is not None else np.nan,
                 "anchor_y": float(anchor[1]) if anchor is not None else np.nan,
                 "anchor_z": float(anchor[2]) if anchor is not None else np.nan,
