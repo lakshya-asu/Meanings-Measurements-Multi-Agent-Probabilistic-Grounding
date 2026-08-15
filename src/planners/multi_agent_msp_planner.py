@@ -10,6 +10,15 @@ from src.schema.prediction import normalize_prediction
 # Import the MSP Engine (numeric-conditioning aware subclass of MSPEngineSmart)
 from src.planners.msp_engine_numeric import NumericConditioningEngine, gt_front_theta
 
+# MAPG-01: kernel bandwidths from real Hydra AABB extents (pure helpers,
+# host-importable; formulas documented in the module docstring)
+from src.msp.kernel_bandwidths import (
+    FIXED_SIZE_M,
+    resolve_mode as resolve_bandwidth_mode,
+    resolve_object_size_hab,
+    bandwidth_size_hab,
+)
+
 # P0 fix 1: single deterministic source for d0 (no silent 1.0 m default)
 from src.parsing.metric_literal import (
     parse_metric_literal,
@@ -96,6 +105,26 @@ class MultiAgentMSPPlanner:
 
         # New configurable top_k parameter for returning best objects
         self.top_k = int(getattr(self.cfg, "top_k_objects", 2))
+
+        # ------------------------------------------------------------------
+        # MAPG-01: kernel bandwidths. cfg ``kernel_bandwidths`` is
+        # "from_bbox" (default) or "fixed" (ablation arm, preserves the
+        # historical hardcoded 0.5 m cube). Under from_bbox each
+        # candidate's size comes from its Hydra AABB, and the engine is
+        # handed an isotropic cube built from the anchor's max
+        # horizontal extent s, so sigma_s = sigma_s_factor * s
+        # (default 0.5 * s). Full formula set and frame conventions:
+        # src.msp.kernel_bandwidths.py. A node without a valid box
+        # falls back to the fixed cube with a recorded reason.
+        # ------------------------------------------------------------------
+        self.kernel_bandwidths, _kb_warn = resolve_bandwidth_mode(
+            _cfg_get(self.cfg, "kernel_bandwidths", None)
+        )
+        if _kb_warn:
+            click.secho(f"[MSP] {_kb_warn}", fg="yellow")
+        click.secho(f"[MSP] kernel_bandwidths={self.kernel_bandwidths}", fg="cyan")
+        # Per-candidate size provenance: {id: (source, reason)}.
+        self._size_provenance = {}
 
         # Persistent context
         self.locked_anchor_id = None
@@ -275,20 +304,51 @@ class MultiAgentMSPPlanner:
         except Exception:
             return None
 
+    def _resolve_candidate_size(self, oid):
+        """MAPG-01: (size_hab, source, reason) for one object node.
+
+        Under kernel_bandwidths=from_bbox the size is the node's real
+        Hydra AABB extents reordered to the habitat y-up frame; a
+        missing or invalid box falls back to the fixed 0.5 m cube with
+        a recorded reason. Never raises.
+        """
+        extents = None
+        extents_err = None
+        if self.kernel_bandwidths == "from_bbox":
+            getter = getattr(self.sg_sim, "get_extents_from_id", None)
+            if getter is None:
+                extents_err = "sg_sim has no get_extents_from_id"
+            else:
+                try:
+                    extents = getter(oid)
+                except Exception as e:
+                    extents_err = f"extents lookup failed: {e}"
+        if extents_err is not None:
+            return list(FIXED_SIZE_M), "fixed_fallback", extents_err
+        return resolve_object_size_hab(extents, self.kernel_bandwidths)
+
     def _get_scene_data(self):
         from src.envs.utils import pos_normal_to_habitat
         objects, frontiers = [], []
+        self._size_provenance = {}
         for oid, name in zip(self.sg_sim.object_node_ids, self.sg_sim.object_node_names):
             pos_norm = self.sg_sim.get_position_from_id(oid)
             if pos_norm is not None:
                 pos_hab = np.asarray(pos_normal_to_habitat(np.asarray(pos_norm, dtype=np.float32)), dtype=np.float32)
-                objects.append({"id": str(oid), "name": str(name).lower(), "position": pos_hab.tolist(), "size": [0.5, 0.5, 0.5]})
-        
+                # MAPG-01: real AABB extents (habitat y-up order) instead
+                # of the historical hardcoded 0.5 m cube.
+                size_hab, size_source, size_reason = self._resolve_candidate_size(oid)
+                self._size_provenance[str(oid)] = (size_source, size_reason)
+                if size_reason is not None:
+                    click.secho(f"[MSP] size fallback for {oid}: {size_reason}", fg="yellow")
+                objects.append({"id": str(oid), "name": str(name).lower(), "position": pos_hab.tolist(), "size": size_hab})
+
         for fid in getattr(self.sg_sim, "frontier_node_ids", []) or []:
             pos_norm = self.sg_sim.get_position_from_id(fid)
             if pos_norm is not None:
                 pos_hab = np.asarray(pos_normal_to_habitat(np.asarray(pos_norm, dtype=np.float32)), dtype=np.float32)
-                frontiers.append({"id": str(fid), "name": "frontier", "position": pos_hab.tolist(), "size": [0.5, 0.5, 0.5]})
+                # Frontiers have no AABB; keep the fixed cube.
+                frontiers.append({"id": str(fid), "name": "frontier", "position": pos_hab.tolist(), "size": list(FIXED_SIZE_M)})
         return objects, frontiers
 
     def get_next_action(self, agent_yaw_rad: float = 0.0, agent_pos_hab: Optional[np.ndarray] = None):
@@ -468,11 +528,25 @@ class MultiAgentMSPPlanner:
                     fg="yellow",
                 )
 
+        # MAPG-01: bandwidths from the anchor's real AABB. The engine
+        # derives sigma_s/sigma_m/kappa from max(anchor_size), so we
+        # hand it an isotropic cube [s, s, s] with s the anchor's max
+        # horizontal extent (habitat x/z; vertical excluded on purpose,
+        # see src.msp.kernel_bandwidths.py):
+        #   sigma_s = sigma_s_factor * s (default 0.5 * s).
+        # Fixed mode and box fallbacks use the historical 0.5 m cube
+        # (sigma_s = 0.25 m), preserving pre-MAPG-01 behavior.
+        anchor_size_source, anchor_size_reason = self._size_provenance.get(
+            str(primary_anchor_id), ("fixed_fallback", "anchor missing from size provenance")
+        )
+        anchor_size_hab = [float(v) for v in primary_anchor_obj.get("size", list(FIXED_SIZE_M))]
+        engine_anchor_size, bandwidth_scale_m = bandwidth_size_hab(anchor_size_hab, anchor_size_source)
+
         msp_objects, msp_frontiers = self.msp_engine.score_candidates(
             objects=objects,
             frontiers=frontiers,
             anchor_pos_hab=anchor_pos,
-            anchor_size=primary_anchor_obj.get("size", [0.5, 0.5, 0.5]),
+            anchor_size=engine_anchor_size,
             kernel_params=kernel_params_used,
             question_dist=dist_m,
             planar=True,
@@ -483,7 +557,7 @@ class MultiAgentMSPPlanner:
             anchor_pos_hab=anchor_pos,
             kernel_params=kernel_params_used,
             question_dist=dist_m,
-            anchor_size=primary_anchor_obj.get("size", [0.5, 0.5, 0.5]),
+            anchor_size=engine_anchor_size,
             planar=True,
             use_map=True
         )
@@ -500,6 +574,14 @@ class MultiAgentMSPPlanner:
         extracted_pdf_params["metric_kernel_active"] = bool(metric_kernel_active)
         extracted_pdf_params["gt_anchor_front_yaw"] = self.gt_anchor_front_yaw
         extracted_pdf_params["gt_front_used"] = bool(gt_front_used)
+        # MAPG-01: bandwidth size provenance (sigma_s = sigma_s_factor *
+        # bandwidth_scale_m; scale is the anchor's max horizontal extent
+        # under from_bbox, 0.5 m under fixed or any fallback).
+        extracted_pdf_params["kernel_bandwidths"] = self.kernel_bandwidths
+        extracted_pdf_params["anchor_size_source"] = anchor_size_source
+        extracted_pdf_params["anchor_size_fallback_reason"] = anchor_size_reason
+        extracted_pdf_params["anchor_size_hab"] = anchor_size_hab
+        extracted_pdf_params["bandwidth_scale_m"] = float(bandwidth_scale_m)
 
         metric_parse_record = {
             "value_m": self.metric_parse.value_m,

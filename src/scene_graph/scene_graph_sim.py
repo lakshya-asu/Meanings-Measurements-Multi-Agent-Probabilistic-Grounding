@@ -1,4 +1,4 @@
-import json, time, os
+import json, math, time, os
 import numpy as np
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -34,6 +34,27 @@ class Rooms(str, Enum):
 class Room_response(BaseModel):
     explanation: str
     room: Rooms
+
+
+def _safe_bbox_extents_center(bbox):
+    """MAPG-01: (extents, center) of a Hydra AABB, both rounded to 2 dp
+    (centimeter precision, keeps the LLM-visible serialization compact),
+    in the z-up world frame like node 'position'. Returns (None, None)
+    when the box is missing, malformed, or degenerate. Never raises."""
+    try:
+        if bbox is None:
+            return None, None
+        dims = [float(x) for x in bbox.dimensions]
+        center = [float(x) for x in bbox.world_P_center]
+        if len(dims) != 3 or len(center) != 3:
+            return None, None
+        if any(not math.isfinite(v) for v in dims + center):
+            return None, None
+        if max(dims) <= 0.0:
+            return None, None
+        return [round(v, 2) for v in dims], [round(v, 2) for v in center]
+    except Exception:
+        return None, None
 
 class SceneGraphSim:
     def __init__(self, cfg, output_path, pipeline, rr_logger=None, device='cpu', clean_ques_ans=' ', enrich_object_labels=None, enrich_provider: str = 'qwen'):
@@ -185,7 +206,16 @@ class SceneGraphSim:
                 bb_mat3x3.append(bbox.world_R_center)
                 bb_labels.append(node.attributes.name)
                 bb_colors.append(node.attributes.color)
-                
+
+                # MAPG-01: keep the AABB in the node data instead of
+                # dropping it after bb_info. z-up world frame, meters,
+                # rounded to 2 dp. Nodes without a valid box simply do
+                # not carry the keys; consumers must fall back.
+                _extents, _bb_center = _safe_bbox_extents_center(bbox)
+                if _extents is not None:
+                    attr['bbox_extents'] = _extents
+                    attr['bbox_center'] = _bb_center
+
                 if node_name in self.filter_out_objects:
                     continue
                 self.filtered_obj_positions.append(node.attributes.position)
@@ -413,6 +443,17 @@ class SceneGraphSim:
 
     def get_position_from_id(self, nodeid):
         return np.array(self.filtered_netx_graph.nodes[nodeid]['position'])
+
+    def get_extents_from_id(self, nodeid):
+        """MAPG-01: AABB extents [dx, dy, dz] in meters (z-up world
+        frame, 2 dp) for a node, or None when the node is unknown or
+        carries no stored box. Never raises."""
+        try:
+            if not self.filtered_netx_graph.has_node(nodeid):
+                return None
+            return self.filtered_netx_graph.nodes[nodeid].get('bbox_extents')
+        except Exception:
+            return None
 
     def save_best_image(self, imgs_rgb):
 
