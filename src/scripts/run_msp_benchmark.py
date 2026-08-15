@@ -40,22 +40,34 @@ from src.results.store import ResultsStore
 from src.results.manifest import build_manifest, write_manifest
 from src.schema.prediction import normalize_prediction
 
+from src.paths import resolve_data_path
+
 
 SEM_LIST = "/datasets/hm3d/train/train-semantic-annots-files.json"
-with open(SEM_LIST) as f:
-    _semantic_ok = set()
-    for p in json.load(f):
-        base = os.path.basename(p).split(".")[0]
-        _semantic_ok.add(base)
+_semantic_ok = None
+
+
+def _load_semantic_ok():
+    # Lazy load so importing this module does not require the dataset.
+    # resolve_data_path keeps the container path when it exists and maps
+    # it onto the host checkout otherwise.
+    global _semantic_ok
+    if _semantic_ok is None:
+        with open(resolve_data_path(SEM_LIST)) as f:
+            _semantic_ok = set()
+            for p in json.load(f):
+                base = os.path.basename(p).split(".")[0]
+                _semantic_ok.add(base)
+    return _semantic_ok
 
 
 def scene_has_semantics(scene_id: str) -> bool:
-    return scene_id in _semantic_ok
+    return scene_id in _load_semantic_ok()
 
 
 def load_init_poses_csv(init_pose_path: str):
     out = {}
-    with open(init_pose_path, "r") as f:
+    with open(resolve_data_path(init_pose_path), "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             scene_floor = row["scene_floor"]
@@ -71,7 +83,7 @@ def load_init_poses_csv(init_pose_path: str):
 
 def load_questions_msp_csv(qpath: str):
     data = []
-    with open(qpath, "r") as f:
+    with open(resolve_data_path(qpath), "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             data.append(row)
