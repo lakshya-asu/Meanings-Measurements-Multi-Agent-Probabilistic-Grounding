@@ -22,6 +22,18 @@ from src.schema.prediction import normalize_prediction
 # MSP imports
 from src.msp.pdf import combined_logpdf as _combined_logpdf
 
+# P0 fix 1: single deterministic source for d0 (no silent 1.0 m default)
+from src.parsing.metric_literal import (
+    parse_metric_literal,
+    infer_relation,
+    resolve_categorical_distance,
+)
+
+# Point-guess radius when the metric kernel is omitted (no literal in the
+# utterance). This is a PROPOSAL radius for the reported point only, not a
+# kernel parameter: candidate scoring keeps the metric kernel flat.
+_NO_METRIC_POINT_GUESS_RADIUS_M = 1.5
+
 
 # =============================================================================
 # Config / Setup
@@ -135,10 +147,16 @@ def _camera_theta_to_world(vlm_theta: float, agent_yaw: float) -> float:
     return _wrap_angle(agent_yaw + float(vlm_theta))
 
 
-def _parse_q_dist(question: str) -> float:
-    import re
-    m = re.search(r"(\d+(?:\.\d+)?)\s*meters?", (question or "").lower())
-    return float(m.group(1)) if m else 1.0
+def _parse_q_dist(question: str) -> Optional[float]:
+    """Deterministic metric-literal parse (P0 fix 1: d0 single source).
+
+    Returns the parsed distance in meters, or None when the utterance
+    has no metric literal. There is NO default anymore: the old version
+    silently returned 1.0 here, fabricating a hard metric constraint
+    for every no-distance query. None now means the metric kernel is
+    omitted from the composition downstream.
+    """
+    return parse_metric_literal(question).value_m
 
 
 def _unit_dir_from_theta_phi(theta: float, phi: float) -> np.ndarray:
@@ -397,13 +415,23 @@ class MSPEngineSmart:
         anchor_pos_hab: np.ndarray,
         candidate_pos_hab: np.ndarray,
         candidate_size: Optional[List[float]],
-        distance_m: float,
+        distance_m: Optional[float],
     ) -> Dict[str, float]:
+        """Metric + semantic kernel params for one candidate.
+
+        distance_m may be None (no metric literal in the utterance). The
+        metric kernel is then OMITTED from the composition: d0 = 0 with
+        sigma_m = 1e6 makes the radial exponent numerically zero, the
+        same mechanism flatten_semantic uses for the semantic kernel.
+        No fabricated 1.0 m default. metric_kernel_active records the
+        state for ablations (extra keys are ignored by combined_logpdf).
+        """
         pos = np.asarray(anchor_pos_hab, dtype=np.float32)
         size = candidate_size or [0.5, 0.5, 0.5]
         w, d, h = [float(x) for x in size[:3]]
         max_dim = max(w, d, h)
 
+        metric_active = distance_m is not None
         return {
             "mu_x": float(pos[0]),
             "mu_y": float(pos[1]),
@@ -412,8 +440,9 @@ class MSPEngineSmart:
             "x0": float(anchor_pos_hab[0]),
             "y0": float(anchor_pos_hab[1]),
             "z0": float(anchor_pos_hab[2]),
-            "d0": float(distance_m),
-            "sigma_m": 0.3 * max_dim,
+            "d0": float(distance_m) if metric_active else 0.0,
+            "sigma_m": (0.3 * max_dim) if metric_active else 1.0e6,
+            "metric_kernel_active": bool(metric_active),
         }
 
     def score_point(
@@ -503,7 +532,7 @@ class MSPEngineSmart:
 
 
 # =============================================================================
-# STEP 3: Planner — VLM sees scored candidates + point guess, logs everything
+# STEP 3: Planner: VLM sees scored candidates + point guess, logs everything
 # =============================================================================
 
 class VLMPlannerMSP_Smart:
@@ -549,10 +578,37 @@ class VLMPlannerMSP_Smart:
         if self._anchor_center_hab is not None:
             self._anchor_center_hab = np.asarray(self._anchor_center_hab, dtype=np.float32)
 
-        # kept for logging / cues only (kernel will NOT fallback to this)
+        # P0 fix 2: GT anchor front yaw (bench ann_yaw_rad). Recorded in
+        # every trace; USED only when cfg frames.gt_front is true (the
+        # oracle-frames ablation). It is ground truth: the default
+        # pipeline must never consume it.
         self._anchor_front_yaw_world: Optional[float] = kwargs.get("anchor_front_yaw_world", None)
         if self._anchor_front_yaw_world is not None:
             self._anchor_front_yaw_world = float(self._anchor_front_yaw_world)
+        self._gt_front_available: bool = self._anchor_front_yaw_world is not None
+        try:
+            _frames_cfg = getattr(cfg, "frames", None)
+            self._use_gt_front: bool = bool(getattr(_frames_cfg, "gt_front", False)) if _frames_cfg is not None else False
+        except Exception:
+            self._use_gt_front = False
+
+        # P0 fix 1: d0 single source. Parse the metric literal ONCE per
+        # episode; no default (None = metric kernel omitted). The
+        # numeric_conditioning flag keeps the pathway ablatable:
+        # on / off / categorical_only (per-relation nominal distances).
+        self._numeric_conditioning: str = str(
+            getattr(cfg, "numeric_conditioning", "on") or "on"
+        ).lower().strip()
+        if self._numeric_conditioning not in ("on", "off", "categorical_only"):
+            self._numeric_conditioning = "on"
+        self._metric_parse = parse_metric_literal(question)
+        if self._numeric_conditioning == "off":
+            self._dist_m: Optional[float] = None
+        elif self._numeric_conditioning == "categorical_only":
+            self._dist_m = resolve_categorical_distance(infer_relation(question))
+        else:
+            self._dist_m = self._metric_parse.value_m
+        self._metric_kernel_active: bool = self._dist_m is not None
 
         self.msp_engine = MSPEngineSmart()
 
@@ -574,6 +630,17 @@ class VLMPlannerMSP_Smart:
                     self._anchor_center_hab.tolist() if self._anchor_center_hab is not None else None
                 ),
                 "anchor_front_yaw_world": self._anchor_front_yaw_world,
+                "gt_front_available": self._gt_front_available,
+                "frames_gt_front": self._use_gt_front,
+                "numeric_conditioning": self._numeric_conditioning,
+                "metric_parse": {
+                    "value_m": self._metric_parse.value_m,
+                    "unit": self._metric_parse.unit,
+                    "raw": self._metric_parse.raw,
+                    "warnings": list(self._metric_parse.warnings),
+                },
+                "d0_used_m": self._dist_m,
+                "metric_kernel_active": self._metric_kernel_active,
             },
         )
 
@@ -702,7 +769,7 @@ class VLMPlannerMSP_Smart:
         anchor_name: str,
         anchor_pos_hab: np.ndarray,
         kernel: Dict[str, Any],
-        dist_m: float,
+        dist_m: Optional[float],
         top_objects: List[Dict[str, Any]],
         top_frontiers: List[Dict[str, Any]],
         point_guess: Optional[Dict[str, Any]],
@@ -734,6 +801,11 @@ class VLMPlannerMSP_Smart:
                 f"- id={f['id']} score={f.get('msp_score',0.0):.3f} xyz_hab=[{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}]"
             )
 
+        dist_str = (
+            f"{dist_m:.3f}" if dist_m is not None
+            else "unspecified (no metric literal; metric kernel omitted)"
+        )
+
         point_block = "POINT_GUESS: none\n"
         if point_guess is not None:
             pg = point_guess["target_xyz_hab"]
@@ -752,7 +824,7 @@ Question: {self._question}
 Anchor:
 - name: {anchor_name}
 - anchor_xyz_hab: [{anchor_pos_hab[0]:.3f},{anchor_pos_hab[1]:.3f},{anchor_pos_hab[2]:.3f}]
-- requested_distance_m: {dist_m:.3f}
+- requested_distance_m: {dist_str}
 
 Spatial Kernel (world):
 - theta_world: {kernel['theta']:.4f}
@@ -995,7 +1067,26 @@ Output STRICT JSON only:
             self._t += 1
             return None, None, False, 0.0, normalize_prediction(plan)
 
-        dist_m = _parse_q_dist(self._question)
+        # P0 fix 1: d0 resolved once per episode in __init__ from the
+        # deterministic parser. None = no metric literal = metric kernel
+        # omitted from the composition (no fabricated 1.0 m).
+        dist_m = self._dist_m
+
+        # P0 fix 2: oracle-frames ablation only. Override the kernel yaw
+        # with the GT anchor front yaw when cfg frames.gt_front is true
+        # and the relation is intrinsic. Recorded either way.
+        gt_front_used = False
+        if self._use_gt_front and self._gt_front_available:
+            from src.planners.msp_engine_numeric import gt_front_theta
+            theta_override = gt_front_theta(
+                self._anchor_front_yaw_world, infer_relation(self._question)
+            )
+            if theta_override is not None:
+                kernel = dict(kernel)
+                kernel["theta"] = float(theta_override)
+                gt_front_used = True
+        kernel["gt_anchor_front_yaw"] = self._anchor_front_yaw_world
+        kernel["gt_front_used"] = bool(gt_front_used)
 
         # ---------------------------------------------------------------------
         # MSP scoring
@@ -1008,9 +1099,12 @@ Output STRICT JSON only:
             question_dist=dist_m,
         )
 
-        # WHERE point guess always computed/logged (selector can ignore)
+        # WHERE point guess always computed/logged (selector can ignore).
+        # Without a metric literal the radius is a documented proposal
+        # value, not a kernel parameter (the density has no radial peak).
         dir_world = _unit_dir_from_theta_phi(float(kernel["theta"]), float(kernel["phi"]))
-        point_xyz = (anchor_pos + float(dist_m) * dir_world).astype(np.float32)
+        point_radius_m = float(dist_m) if dist_m is not None else _NO_METRIC_POINT_GUESS_RADIUS_M
+        point_xyz = (anchor_pos + point_radius_m * dir_world).astype(np.float32)
 
         point_logp = self.msp_engine.score_point(
             point_hab=point_xyz,
@@ -1042,6 +1136,8 @@ Output STRICT JSON only:
             },
             "kernel": kernel,
             "dist_m": dist_m,
+            "metric_kernel_active": self._metric_kernel_active,
+            "numeric_conditioning": self._numeric_conditioning,
             "point_guess": point_guess,
             "top_objects": [
                 {"id": o["id"], "name": o.get("name", ""), "msp_score": float(o.get("msp_score", 0.0)), "pos_hab": o.get("position")}
@@ -1083,7 +1179,7 @@ Output STRICT JSON only:
                 {"type": "selector_error", "t": self._t, "mode": self.answer_mode, "error": str(e), "raw_response_text": raw_text},
             )
 
-            # Selector fallback (kept) — kernel fallback removed, selector fallback still OK.
+            # Selector fallback (kept): kernel fallback removed, selector fallback still OK.
             if len(top_objects) > 0:
                 plan = {
                     "thought": f"Selector failed; fallback to best object. Error={e}",
@@ -1209,10 +1305,15 @@ Output STRICT JSON only:
             "reasoning": kernel.get("reasoning", ""),
             "debug": kernel.get("debug", {}),
             "image_path": img_path,
+            "gt_anchor_front_yaw": self._anchor_front_yaw_world,
+            "gt_front_available": self._gt_front_available,
+            "gt_front_used": bool(kernel.get("gt_front_used", False)),
         }
 
         score_trace = {
-            "dist_m": float(dist_m),
+            "dist_m": (float(dist_m) if dist_m is not None else None),
+            "metric_kernel_active": self._metric_kernel_active,
+            "numeric_conditioning": self._numeric_conditioning,
             "point_guess": {"xyz_hab": point_xyz.tolist(), "score": float(point_logp)},
             "objects": _summarize_rank_delta(msp_objects, k=8),
             "frontiers": _summarize_rank_delta(msp_frontiers, k=6),
