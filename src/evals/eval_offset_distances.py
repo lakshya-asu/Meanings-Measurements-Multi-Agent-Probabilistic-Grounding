@@ -2,10 +2,18 @@
 import argparse
 import json
 import os
+import sys
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+try:
+    from src.schema.prediction import normalize_prediction
+except ImportError:
+    # Allow running this script from anywhere, not just the repo root.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    from src.schema.prediction import normalize_prediction
 
 
 def _euclid(a: np.ndarray, b: np.ndarray) -> float:
@@ -53,7 +61,11 @@ def _extract_pred_xyz(jentry: Dict[str, Any]) -> Tuple[Optional[np.ndarray], str
     if not isinstance(final_pred, dict):
         return None, "missing"
 
-    # 1) Point mode: target_point_xyz
+    # 0) Normalize first: maps every legacy key (target_location,
+    # target_xyz_hab, selected_object_xyz, ...) onto target_point_xyz.
+    final_pred = normalize_prediction(final_pred)
+
+    # 1) Point mode: target_point_xyz (canonical key)
     tp = final_pred.get("target_point_xyz", None)
     if isinstance(tp, (list, tuple)) and len(tp) == 3:
         try:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from src.utils.data_utils import get_latest_image
+from src.schema.prediction import normalize_prediction
 
 # Import your existing MSP Engine
 from src.planners.vlm_planner_msp_debug import MSPEngineSmart, _parse_q_dist
@@ -389,7 +390,9 @@ class MultiAgentMSPPlanner:
         
         # Format the comprehensive output
         def build_answer(action_type, chosen_id, conf_score, target_hab, thought):
-             return finalize_step(target_hab, chosen_id, True if conf_score > 0.9 else False, conf_score, {
+             # normalize_prediction keeps target_location for backward
+             # compatibility and adds the canonical target_point_xyz key.
+             return finalize_step(target_hab, chosen_id, True if conf_score > 0.9 else False, conf_score, normalize_prediction({
                  "action_type": action_type,
                  "chosen_id": chosen_id,
                  "confidence": conf_score,
@@ -397,7 +400,7 @@ class MultiAgentMSPPlanner:
                  "pdf_params": extracted_pdf_params,
                  "target_location": point_xyz.tolist(),
                  "top_k_objects": top_k_objects
-             })
+             }))
              
         is_location_target = any(w in orch_out.get("target_entity", "").lower() for w in ["location", "region", "point", "place", "area"])
 
