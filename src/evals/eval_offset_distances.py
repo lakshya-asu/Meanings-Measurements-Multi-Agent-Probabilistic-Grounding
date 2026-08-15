@@ -10,11 +10,13 @@ import pandas as pd
 
 try:
     from src.schema.prediction import normalize_prediction
+    from src.evals.angular import angular_errors_from_points
     from src.evals.success import euclidean_error, horizontal_error
 except ImportError:
     # Allow running this script from anywhere, not just the repo root.
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from src.schema.prediction import normalize_prediction
+    from src.evals.angular import angular_errors_from_points
     from src.evals.success import euclidean_error, horizontal_error
 
 
@@ -120,6 +122,7 @@ def main():
         J = json.load(f)
 
     rows = []
+    rows_missing_orientation = 0
     for i, r in df.reset_index(drop=True).iterrows():
         scene = str(r["scene"])
         floor = r["floor"]
@@ -180,6 +183,19 @@ def main():
             if pred is not None:
                 anchor_to_pred_m = _euclid(anchor, pred)
 
+        # Angular errors (item 7). Both orientations are derived from
+        # point geometry per metrics.md section 2.1:
+        # e_theta = angle(pred - anchor, gt - anchor); yaw and pitch
+        # errors are its horizontal and vertical decomposition. The one
+        # canonical implementation lives in src/evals/angular.py.
+        ang = angular_errors_from_points(
+            pred.tolist() if pred is not None else None,
+            gt.tolist(),
+            anchor.tolist() if anchor is not None else None,
+        )
+        if ang["yaw_error_deg"] is None or ang["pitch_error_deg"] is None:
+            rows_missing_orientation += 1
+
         rows.append(
             {
                 "method": args.method or "unknown",
@@ -211,6 +227,9 @@ def main():
                 "anchor_z": float(anchor[2]) if anchor is not None else np.nan,
                 "anchor_to_gt_m": anchor_to_gt_m if anchor_to_gt_m is not None else np.nan,
                 "anchor_to_pred_m": anchor_to_pred_m if anchor_to_pred_m is not None else np.nan,
+                "yaw_error_deg": ang["yaw_error_deg"] if ang["yaw_error_deg"] is not None else np.nan,
+                "pitch_error_deg": ang["pitch_error_deg"] if ang["pitch_error_deg"] is not None else np.nan,
+                "angular_error_deg": ang["angular_error_deg"] if ang["angular_error_deg"] is not None else np.nan,
             }
         )
 
@@ -218,6 +237,12 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     out_df.to_csv(args.out, index=False)
     print(f"[OK] Wrote: {args.out}  (rows={len(out_df)})")
+    n_scored = len(out_df) - rows_missing_orientation
+    print(
+        f"[OK] Angular errors: {n_scored}/{len(out_df)} rows scored; "
+        f"{rows_missing_orientation} rows lacked orientation "
+        f"(missing prediction or anchor, or point coincides with anchor)."
+    )
 
 
 if __name__ == "__main__":
