@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import json
 import math
+import time
 import base64
 import mimetypes
 from pathlib import Path
@@ -13,6 +14,10 @@ from typing import Optional, Any, Dict, List, Tuple
 
 import numpy as np
 import google.generativeai as genai
+
+# MAPG-02: real per-call accounting. The Gemini response objects are
+# built in this file, so token counts come from resp.usage_metadata.
+from src.results.calls import CallLog, extract_usage
 
 # Graph EQA / Habitat imports
 from src.envs.utils import pos_normal_to_habitat
@@ -45,7 +50,8 @@ if "GOOGLE_API_KEY" not in os.environ:
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 # Keep a single global model instance
-gemini_model = genai.GenerativeModel(model_name="models/gemini-2.5-pro")
+_GEMINI_MODEL_NAME = "models/gemini-2.5-pro"
+gemini_model = genai.GenerativeModel(model_name=_GEMINI_MODEL_NAME)
 
 
 # =============================================================================
@@ -190,6 +196,7 @@ def get_vlm_spatial_kernel_params(
     anchor_front_yaw_world: Optional[float] = None,  # kept for logging only
     log_jsonl_path: Optional[Path] = None,
     step_t: Optional[int] = None,
+    call_log: Optional[CallLog] = None,
 ) -> Dict[str, Any]:
     """
     VLM-only kernel.
@@ -198,6 +205,11 @@ def get_vlm_spatial_kernel_params(
       ok: bool
       (if ok) theta, phi, kappa, reasoning, debug
       (if not ok) error, debug
+
+    MAPG-02: when call_log is given, the Gemini invocation is recorded
+    as one call with usage_metadata token counts. The no-image early
+    return records nothing (the API is never hit); an API error is
+    still one call with unknown tokens.
     """
     # normalize (kept to avoid accidental type issues)
     _ = np.asarray(anchor_pos_hab, dtype=np.float32)
@@ -308,6 +320,8 @@ Return JSON only.
     ]
 
     raw_text = ""
+    _t0 = time.perf_counter()
+    _call_recorded = False
     try:
         resp = gemini_model.generate_content(
             messages,
@@ -317,6 +331,17 @@ Return JSON only.
                 response_schema=schema,
             ),
         )
+        if call_log is not None:
+            _pt, _ct = extract_usage(resp)
+            call_log.record(
+                "kernel",
+                model_name=_GEMINI_MODEL_NAME,
+                prompt_tokens=_pt,
+                completion_tokens=_ct,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=step_t,
+            )
+            _call_recorded = True
         raw_text = resp.text
         d = json.loads(resp.text)
 
@@ -373,6 +398,15 @@ Return JSON only.
         return out
 
     except Exception as e:
+        # The API was invoked (only the no-image path returns before the
+        # call); record it once even when the response or parse failed.
+        if call_log is not None and not _call_recorded:
+            call_log.record(
+                "kernel",
+                model_name=_GEMINI_MODEL_NAME,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=step_t,
+            )
         out = {
             "ok": False,
             "error": f"VLM kernel call failed; no fallback allowed. Error: {e}",
@@ -611,6 +645,13 @@ class VLMPlannerMSP_Smart:
         self._metric_kernel_active: bool = self._dist_m is not None
 
         self.msp_engine = MSPEngineSmart()
+
+        # MAPG-02: per-call accounting. The runner's vlm_calls rollup is
+        # call_log.total() (2 calls on a full step: kernel + selector; 0
+        # on anchor-missing steps; 1 when the kernel fails before the
+        # selector). This planner has no retry loop, so is_retry stays
+        # False on every row.
+        self.call_log = CallLog()
 
         self._vlm_calls_path = self._out_path / "vlm_calls.jsonl"
 
@@ -885,13 +926,35 @@ Output STRICT JSON only:
         )
 
         messages = [{"role": "user", "parts": [{"text": prompt}]}]
-        resp = gemini_model.generate_content(
-            messages,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                response_schema=selector_schema,
-            ),
+        # MAPG-02: record the selector invocation with usage_metadata
+        # token counts; an API error is still one call (unknown tokens)
+        # before the exception propagates to the caller's fallback.
+        _t0 = time.perf_counter()
+        try:
+            resp = gemini_model.generate_content(
+                messages,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                    response_schema=selector_schema,
+                ),
+            )
+        except Exception:
+            self.call_log.record(
+                "selector",
+                model_name=_GEMINI_MODEL_NAME,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=self._t,
+            )
+            raise
+        _pt, _ct = extract_usage(resp)
+        self.call_log.record(
+            "selector",
+            model_name=_GEMINI_MODEL_NAME,
+            prompt_tokens=_pt,
+            completion_tokens=_ct,
+            latency_ms=(time.perf_counter() - _t0) * 1000.0,
+            step_idx=self._t,
         )
         return json.loads(resp.text), resp.text
 
@@ -1013,6 +1076,7 @@ Output STRICT JSON only:
             anchor_front_yaw_world=self._anchor_front_yaw_world,
             log_jsonl_path=self._vlm_calls_path,
             step_t=self._t,
+            call_log=self.call_log,
         )
 
         if not kernel.get("ok", False):

@@ -29,6 +29,10 @@ from src.parsing.metric_literal import (
 # P0 fix 3: programmatic verifier checks
 from src.verification.checks import run_checks, failed_reasons
 
+# MAPG-02: real per-call accounting. One CallLog per episode; the
+# runner's vlm_calls rollup is call_log.total(), retries included.
+from src.results.calls import CallLog, model_name_of
+
 # Import the new Multi-Agent components
 from src.multi_agent.blackboard import Blackboard
 from src.multi_agent.agents.orchestrator_agent import OrchestratorAgent
@@ -186,6 +190,15 @@ class MultiAgentMSPPlanner:
             pass
         self.verifier_rejections = 0
         self.max_verifier_retries = 2
+
+        # ------------------------------------------------------------------
+        # MAPG-02: per-call LLM accounting. Every agent invocation below
+        # is wrapped with this log; the runner reads call_log.total()
+        # for the episode vlm_calls rollup instead of assuming 4 calls
+        # per step. Token counts are None until MAPG-09 makes the agent
+        # classes return provider usage (they currently drop it).
+        # ------------------------------------------------------------------
+        self.call_log = CallLog()
 
     def _get_room_for_node(self, node_id: str) -> Optional[str]:
         """Traverse the Habitat scene graph hierarchy (Node -> Region -> Room)."""
@@ -364,6 +377,12 @@ class MultiAgentMSPPlanner:
         
         # --- Step Header Logging ---
         step_num = self.blackboard.step_t + 1
+
+        # MAPG-02: a step that re-runs because the verifier rejected the
+        # previous one (P0 fix 3 retry loop, bounded by
+        # max_verifier_retries) is a retry; its calls are flagged so the
+        # accounting can separate first-attempt from retry spend.
+        is_retry_step = self.verifier_rejections > 0
         click.secho(f"\n{'='*20} MULTI-AGENT STEP {step_num} {'='*20}", fg="magenta", bold=True)
         click.secho(f"[Env] Pose: {agent_pos_hab.tolist()} | Yaw: {agent_yaw_rad:.3f} rad", fg="white")
         click.secho(f"[Env] Semantic State: {agent_state_str}", fg="white")
@@ -404,7 +423,11 @@ class MultiAgentMSPPlanner:
         # =====================================================================
         if self.blackboard.choices:
             click.secho(f"[Planner] Multiple Choice Query detected. Executing QA Fast Path.", fg="cyan")
-            qa_out = self.qa.process(self.blackboard)
+            qa_out = self.call_log.call(
+                "qa", self.qa.process, self.blackboard,
+                model_name=model_name_of(self.qa),
+                is_retry=is_retry_step, step_idx=step_num,
+            )
             if qa_out.get("ok", False):
                 action_type = qa_out.get("action_type", "lookaround")
                 chosen_id = qa_out.get("chosen_id", "NONE")
@@ -443,10 +466,18 @@ class MultiAgentMSPPlanner:
                 click.secho(f"[Planner] QA Fast Path crashed. Proceeding with standard fallback.", fg="red")
         
         # 2. Agent 1: Orchestrate
-        orch_out = self.orchestrator.process(self.blackboard)
-        
+        orch_out = self.call_log.call(
+            "orchestrator", self.orchestrator.process, self.blackboard,
+            model_name=model_name_of(self.orchestrator),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
+
         # 3. Agent 2: Ground
-        ground_out = self.grounder.process(self.blackboard, orch_out)
+        ground_out = self.call_log.call(
+            "grounding", self.grounder.process, self.blackboard, orch_out,
+            model_name=model_name_of(self.grounder),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
         
 
 
@@ -493,7 +524,11 @@ class MultiAgentMSPPlanner:
         primary_anchor_obj = next((o for o in objects if o["id"] == primary_anchor_id), objects[0])
 
         # 4. Agent 3: Spatial Geometry
-        spatial_out = self.spatial.process(self.blackboard, primary_anchor_obj)
+        spatial_out = self.call_log.call(
+            "spatial", self.spatial.process, self.blackboard, primary_anchor_obj,
+            model_name=model_name_of(self.spatial),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
         if not spatial_out.get("ok", False):
             return finalize_step(self.sg_sim.get_position_from_id(primary_anchor_id), primary_anchor_id, False, 0.0, {"action_type": "goto_object", "chosen_id": primary_anchor_id, "thought": "Spatial failed (likely occluded). Moving closer to object."})
 
@@ -615,7 +650,16 @@ class MultiAgentMSPPlanner:
             scene_max=scene_max,
             navmesh_snap_fn=self._get_navmesh_snap_fn(),
         )
-        verification = self.verifier.process(self.blackboard, checks=checks)
+        # MAPG-02: the verifier only hits the LLM when the critique is
+        # enabled AND the programmatic checks passed; it reports that via
+        # llm_used. record_if keeps programmatic-only verifications out
+        # of the call count.
+        verification = self.call_log.call(
+            "verifier", self.verifier.process, self.blackboard, checks=checks,
+            model_name=model_name_of(self.verifier),
+            is_retry=is_retry_step, step_idx=step_num,
+            record_if=lambda out: bool(isinstance(out, dict) and out.get("llm_used", False)),
+        )
         verifier_record = {
             "status": verification.get("status"),
             "feedback": verification.get("feedback", ""),

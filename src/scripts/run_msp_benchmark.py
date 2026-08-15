@@ -296,7 +296,6 @@ def main(cfg):
 
             for step in range(num_steps):
                 ep_steps += 1
-                ep_vlm_calls += 1
 
                 agent_st = habitat_data._sim.get_agent(0).get_state()
 
@@ -304,6 +303,10 @@ def main(cfg):
                     agent_yaw_rad=float(habitat_data.get_heading_angle()),
                     agent_pos_hab=np.array(agent_st.position),
                 )
+                # MAPG-02: real cumulative call count from the planner's
+                # CallLog (kernel + selector on a full step, 0 on
+                # anchor-missing steps), not an assumed 1 per step.
+                ep_vlm_calls = vlm_planner.call_log.total()
 
                 # "answer" is decided inside the planner; if it claims confident, stop.
                 if is_conf or (conf > 0.9 and extra.get("action_type") == "answer"):
@@ -372,6 +375,9 @@ def main(cfg):
                         )
 
             ep_time = time.time() - ep_t0
+            # MAPG-02: episode rollup straight from the CallLog (column
+            # name stays vlm_calls).
+            ep_vlm_calls = vlm_planner.call_log.total()
             final_conf = 0.0
             if isinstance(final_pred, dict):
                 try:
@@ -426,6 +432,10 @@ def main(cfg):
             # could not be computed.
             store_row.update(decompose_episode(norm_pred, q))
             results_store.record_episode(run_id, store_row)
+            # MAPG-02: per-call rows (role, model, usage_metadata token
+            # counts, latency) into the calls table, keyed
+            # (run_id, qid, call_idx).
+            results_store.record_calls(run_id, experiment_id, vlm_planner.call_log.rows())
 
             total_traj_length += traj_length
             if succ:
