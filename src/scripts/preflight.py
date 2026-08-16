@@ -537,7 +537,15 @@ def run_preflight(cfg_arg: str, select=None) -> int:
 
     # (g) heavy deps importable (required in the container only)
     inside = in_container()
-    for mod in ("numpy", "habitat_sim"):
+    # hydra_python is the scene-graph backend and it is the one import
+    # that fails for an environment reason rather than a missing
+    # package: its bindings need libKimeraRPGO.so from
+    # /catkin_ws/devel/lib, and docker exec does NOT source the catkin
+    # setup that puts it on the library path. A plain `bash -c` fails
+    # and so does a login `bash -lc`; only an explicit
+    # `source /catkin_ws/devel/setup.bash` works. Without this check
+    # preflight goes all green while the runner cannot start at all.
+    for mod in ("numpy", "habitat_sim", "hydra_python"):
         try:
             __import__(mod)
             rep.report(PASS if inside else INFO, "imports", f"{mod} importable")

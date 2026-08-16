@@ -155,7 +155,8 @@ def _cfg_get(node, key: str, default):
     except Exception:
         return default
 
-def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25):
+def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
+         limit: int = 0):
     click.secho(f"[mode] MULTI-AGENT VLM runner | Dataset: {dataset_type}", fg="cyan")
 
     import os
@@ -241,9 +242,20 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
     total_success = 0
     total_traj_length = 0.0
     episode_traces_rows = []
+    # MAPG-08: episodes actually ATTEMPTED, which is what --limit
+    # bounds. Deliberately not question_ind: skipped questions (already
+    # done, no semantics, before --skip) must not eat the budget, or a
+    # smoke run of 5 could silently attempt zero.
+    attempted = 0
+    uncovered_skipped = []
 
     try:
         for question_ind in tqdm(range(len(questions_data))):
+            if limit and attempted >= limit:
+                click.secho(
+                    f"[limit] stopping after {attempted} attempted "
+                    f"episode(s) (--limit {limit})", fg="yellow")
+                break
             # MAPG-11: refuse to start another episode once any cap is
             # already breached.
             if cost_governor is not None:
@@ -262,6 +274,23 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
             if cfg.data.use_semantic_data and not scene_has_semantics(scene_id):
                 continue
 
+            # MAPG-08: a question whose scene_floor has no init pose
+            # used to KeyError several lines below, after the scene had
+            # already been loaded. Skip it loudly instead, so a run over
+            # the covered subset is possible while poses are still being
+            # reviewed. This is not a silent pass: every skip prints,
+            # they are counted and reported at the end, and preflight
+            # still hard-fails on missing poses for the full split, so
+            # nothing can reach a real run under-posed by accident.
+            pose_key = f"{scene}_{floor}"
+            if pose_key not in init_pose_data:
+                uncovered_skipped.append(pose_key)
+                click.secho(
+                    f"[skip] {experiment_id}: no init pose for {pose_key}",
+                    fg="yellow")
+                continue
+
+            attempted += 1
             habitat_data = HabitatInterface(f"{cfg.data.scene_data_path}/{scene}/{scene_id}.basis.glb", cfg=cfg.habitat, device=device)
             pipeline = initialize_hydra_pipeline(cfg.hydra, habitat_data, question_path)
             rr_logger = RRLogger(question_path)
@@ -550,6 +579,18 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
         # Gate 4: the loop finished without crashing.
         run_status = "complete"
 
+        # MAPG-08: state the coverage of what just ran. A partial run
+        # must never read as a full one in the logs, so say both the
+        # attempted count and exactly which pairs were skipped for
+        # want of an init pose.
+        click.secho(f"[coverage] attempted {attempted} episode(s)", fg="cyan")
+        if uncovered_skipped:
+            missing = sorted(set(uncovered_skipped))
+            click.secho(
+                f"[coverage] PARTIAL: skipped {len(uncovered_skipped)} "
+                f"question(s) across {len(missing)} scene_floor pair(s) with "
+                f"no init pose: {', '.join(missing)}", fg="yellow")
+
     except CostCapExceeded as exc:
         # MAPG-11: hard cost cap breach. Record the breach detail in
         # the manifest (file and store copy), flush the in-progress
@@ -588,6 +629,13 @@ if __name__ == "__main__":
                         help="Which dataset format to load. Prompted interactively if left blank.")
     parser.add_argument("--skip", type=int, default=0, help="Number of queries to skip before starting.")
     parser.add_argument("--max_steps", type=int, default=10, help="Limit number of steps per agent episode.")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Stop after this many ATTEMPTED episodes "
+                             "(0 = no limit). Counts episodes actually "
+                             "started, not questions iterated, so skipped "
+                             "questions do not consume the budget. Use for "
+                             "smoke runs: the cost cap is a backstop, not "
+                             "a plan.")
     args = parser.parse_args()
     
     dataset = args.dataset
@@ -596,4 +644,5 @@ if __name__ == "__main__":
 
     cfg = OmegaConf.load(Path(__file__).resolve().parent.parent / "cfg" / f"{args.cfg_file}.yaml")
     OmegaConf.resolve(cfg)
-    main(cfg, dataset_type=dataset, skip=args.skip, max_steps=args.max_steps)
+    main(cfg, dataset_type=dataset, skip=args.skip, max_steps=args.max_steps,
+         limit=args.limit)
