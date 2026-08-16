@@ -15,7 +15,12 @@ split: bench_v1_98
 # time. Runs must fail if a used alias has no pin; preflight enforces
 # this (check f).
 model_pins:
-  claude-opus-4-6: ''
+  # claude-opus-4-6 has NO dated snapshot suffix: the alias IS the
+  # complete pinned id (verified against the live Anthropic docs,
+  # 2026-08-15; a date-suffixed variant does not exist).
+  claude-opus-4-6: 'claude-opus-4-6'
+  # The cheap tier DOES have a dated id; pin the dated form.
+  claude-haiku-4-5: 'claude-haiku-4-5-20251001'
   gpt-5.2-chat-latest: ''
   qwen3-vl-plus: ''
 
@@ -37,21 +42,35 @@ cost_caps:
 # Preflight enforces this (check h). Keys match by exact model name or
 # by boundary prefix, so a snapshot id resolves to its base row.
 model_prices:
+  # USD per 1M tokens; verified against the claude-api reference and
+  # the live Anthropic docs, 2026-08-15. Prompt-cache multipliers
+  # (informational; the governor prices input/output): cache reads
+  # ~0.1x input, cache writes 1.25x input on the 5-minute TTL (2x on
+  # the 1-hour TTL).
   claude-opus-4-6:
-    input: ''
-    output: ''
-  gpt-5.2-chat-latest:
-    input: ''
-    output: ''
-  gemini-2.5-pro:
-    input: ''
-    output: ''
-  gemini-3-pro-preview:
-    input: ''
-    output: ''
-  qwen3-vl-plus:
-    input: ''
-    output: ''
+    input: 5.00
+    output: 25.00
+  claude-haiku-4-5-20251001:
+    input: 1.00
+    output: 5.00
+  # Rows for models without pinned prices stay commented out rather
+  # than carrying '' placeholders: the governor fails loudly at init
+  # on ANY unusable row, which would block even claude-only runs.
+  # An unpriced model under a capped provider still fails loudly at
+  # validate_models/accrual time, so removing the placeholder rows
+  # loses no safety. Fill and uncomment before running these backends.
+  # gpt-5.2-chat-latest:
+  #   input: ''
+  #   output: ''
+  # gemini-2.5-pro:
+  #   input: ''
+  #   output: ''
+  # gemini-3-pro-preview:
+  #   input: ''
+  #   output: ''
+  # qwen3-vl-plus:
+  #   input: ''
+  #   output: ''
 
 # Conservative per-call token estimate for calls whose provider did
 # not expose token counts. Such spend is charged against the caps and
@@ -115,6 +134,31 @@ vlm:
   # typed outputs, real per-call token usage. "legacy" = the historical
   # per-backend agent classes.
   agents_impl: "unified"
+
+  # MAPG-10: scene-graph serialization for prompt text.
+  # "compact" (default): line format, one node per line, 2 dp
+  # coordinates, real AABB sizes, containment as room=, current agent
+  # pose only, STABLE nodes first / volatile last (the prompt-caching
+  # contract; see src/agents/serialization.py).
+  # "legacy_json": the historical full-precision
+  # json.dumps(nx.node_link_data(G)) dump (ablation arm).
+  sg_serialization: "compact"
+
+  # MAPG-10: per-role model tiering. null = the role's provider default
+  # (main model; no behavior change). A model name overrides the
+  # backend model for that role only; CallLog records model per call.
+  # Safe demotion candidates per method-architecture-cost.md section 3:
+  # orchestrator (runs once per episode after parse-once) and verifier
+  # (programmatic checks gate every step; its LLM critique is optional
+  # and off by default). Do NOT demote grounding/spatial without an
+  # ablation. The MAPG-08 smoke will pin verifier/orchestrator to a
+  # Haiku-class snapshot here.
+  model_tiers:
+    orchestrator: null
+    grounding: null
+    spatial: null
+    verifier: null
+    qa: null
 
   # >>> MSP No-BNN final config
   msp_nobnn:

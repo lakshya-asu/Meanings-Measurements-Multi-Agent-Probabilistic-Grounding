@@ -11,6 +11,16 @@ system prompt (identically for every backend); replies are fence-split
 and json-parsed here, then validated in the role. The ``schema``
 argument is accepted for interface parity and recorded in the request
 for debugging, but the Messages API has no JSON mode to hand it to.
+
+Prompt caching (MAPG-10): the system text is sent as a content block
+with ``cache_control: {"type": "ephemeral"}``, and any user text part
+marked ``cache: True`` (the stable scene-graph prefix emitted by
+render_parts) gets the same annotation. Anthropic caches the byte
+prefix up to each breakpoint at 0.1x read pricing (write 1.25x, 5 min
+TTL); prefixes below the model's minimum cacheable length are simply
+not cached, so the annotation is safe unconditionally. cache_control
+is request structure, not text: the prompt bytes every provider sees
+stay identical (golden-tested).
 """
 
 import os
@@ -47,7 +57,10 @@ class ClaudeBackend(Backend):
         content: List[Dict[str, Any]] = []
         for part in user_parts:
             if part.get("type") == "text":
-                content.append({"type": "text", "text": part["text"]})
+                block: Dict[str, Any] = {"type": "text", "text": part["text"]}
+                if part.get("cache"):
+                    block["cache_control"] = {"type": "ephemeral"}
+                content.append(block)
             elif part.get("type") == "image_path":
                 path = part["path"]
                 content.append(
@@ -66,7 +79,15 @@ class ClaudeBackend(Backend):
             "model": self.model_name,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "temperature": DEFAULT_TEMPERATURE,
-            "system": system,
+            # System as a block list so the stable system text carries a
+            # cache breakpoint; the text bytes are unchanged.
+            "system": [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             "messages": [{"role": "user", "content": content}],
         }
 

@@ -35,7 +35,7 @@ import mimetypes
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.results.calls import extract_usage
+from src.results.calls import extract_cache_usage, extract_usage
 
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_TEMPERATURE = 0.1
@@ -45,8 +45,17 @@ class BackendError(RuntimeError):
     """Raised by adapters for transport or configuration failures."""
 
 
-def text_part(text: str) -> Dict[str, Any]:
-    return {"type": "text", "text": str(text)}
+def text_part(text: str, cache: bool = False) -> Dict[str, Any]:
+    """A text user-part. ``cache=True`` marks it as the end of a
+    stable prefix (MAPG-10): the claude adapter turns the mark into a
+    ``cache_control: ephemeral`` breakpoint; openai/gemini adapters
+    ignore it because their prefix caching is provider-automatic. The
+    mark is request structure, never text: prompt bytes are identical
+    with or without it (golden-tested)."""
+    part: Dict[str, Any] = {"type": "text", "text": str(text)}
+    if cache:
+        part["cache"] = True
+    return part
 
 
 def image_part(path: str) -> Dict[str, Any]:
@@ -83,9 +92,22 @@ def parse_json_reply(raw_text: str) -> Dict[str, Any]:
 
 
 def usage_dict(response: Any) -> Dict[str, Optional[int]]:
-    """Provider usage as the dict shape CallLog's extract_usage reads."""
+    """Provider usage as the dict shape CallLog's extract_usage reads.
+
+    Cache token counts (MAPG-10) are included only when the provider
+    reported them, so the dict shape is unchanged for providers and
+    tests that do not surface caching."""
     prompt_tokens, completion_tokens = extract_usage(response)
-    return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
+    out: Dict[str, Optional[int]] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+    cache_read, cache_write = extract_cache_usage(response)
+    if cache_read is not None:
+        out["cache_read_tokens"] = cache_read
+    if cache_write is not None:
+        out["cache_write_tokens"] = cache_write
+    return out
 
 
 class Backend:

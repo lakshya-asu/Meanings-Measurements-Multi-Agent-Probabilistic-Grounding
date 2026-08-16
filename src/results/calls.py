@@ -38,6 +38,20 @@ _COMPLETION_KEYS = (
     "candidates_token_count",
 )
 
+# MAPG-10: cached-token fields, where providers report them.
+# - Anthropic: usage.cache_read_input_tokens / cache_creation_input_tokens
+# - OpenAI:    usage.prompt_tokens_details.cached_tokens (read only)
+# - Gemini:    usage_metadata.cached_content_token_count (read only)
+# - normalized dicts from src.agents.base.usage_dict carry
+#   cache_read_tokens / cache_write_tokens
+_CACHE_READ_KEYS = (
+    "cache_read_input_tokens",
+    "cached_content_token_count",
+    "cache_read_tokens",
+    "cached_tokens",
+)
+_CACHE_WRITE_KEYS = ("cache_creation_input_tokens", "cache_write_tokens")
+
 
 def _as_opt_int(value: Any) -> Optional[int]:
     """Coerce to int or return None. Never raises."""
@@ -90,6 +104,52 @@ def extract_usage(result: Any) -> Tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def _usage_candidates(result: Any) -> List[Any]:
+    """The same usage-container search order extract_usage walks."""
+    if result is None:
+        return []
+    candidates: List[Any] = []
+    if isinstance(result, dict):
+        usage = result.get("usage")
+        if usage is not None:
+            candidates.append(usage)
+        # A bare usage dict passed directly.
+        candidates.append(result)
+    else:
+        for attr in ("usage", "usage_metadata"):
+            usage = getattr(result, attr, None)
+            if usage is not None:
+                candidates.append(usage)
+        candidates.append(result)
+    return candidates
+
+
+def extract_cache_usage(result: Any) -> Tuple[Optional[int], Optional[int]]:
+    """(cache_read_tokens, cache_write_tokens) where providers report
+    them (MAPG-10), else (None, None). Never estimated.
+
+    Handles the Anthropic flat fields, the Gemini
+    ``cached_content_token_count``, the OpenAI nested
+    ``prompt_tokens_details.cached_tokens``, and dicts already
+    normalized by src.agents.base.usage_dict.
+    """
+    for usage in _usage_candidates(result):
+        read = _first_key(usage, _CACHE_READ_KEYS)
+        write = _first_key(usage, _CACHE_WRITE_KEYS)
+        if read is None:
+            # OpenAI nests the cached count one level down.
+            details = (
+                usage.get("prompt_tokens_details")
+                if isinstance(usage, dict)
+                else getattr(usage, "prompt_tokens_details", None)
+            )
+            if details is not None:
+                read = _first_key(details, ("cached_tokens",))
+        if read is not None or write is not None:
+            return read, write
+    return None, None
+
+
 def model_name_of(agent: Any) -> Optional[str]:
     """Best-effort model name from an agent instance.
 
@@ -117,6 +177,10 @@ class CallRecord:
     is_retry: bool = False
     latency_ms: Optional[float] = None
     step_idx: Optional[int] = None
+    # MAPG-10: provider-reported cached token counts, None when the
+    # provider did not report them (never estimated).
+    cache_read_tokens: Optional[int] = None
+    cache_write_tokens: Optional[int] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -127,6 +191,8 @@ class CallRecord:
             "is_retry": bool(self.is_retry),
             "latency_ms": self.latency_ms,
             "step_idx": self.step_idx,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
         }
 
 
@@ -153,6 +219,8 @@ class CallLog:
         is_retry: bool = False,
         latency_ms: Optional[float] = None,
         step_idx: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_write_tokens: Optional[int] = None,
     ) -> CallRecord:
         rec = CallRecord(
             role=str(role),
@@ -162,6 +230,8 @@ class CallLog:
             is_retry=bool(is_retry),
             latency_ms=(float(latency_ms) if latency_ms is not None else None),
             step_idx=(int(step_idx) if step_idx is not None else None),
+            cache_read_tokens=_as_opt_int(cache_read_tokens),
+            cache_write_tokens=_as_opt_int(cache_write_tokens),
         )
         self._records.append(rec)
         return rec
@@ -203,6 +273,7 @@ class CallLog:
         if record_if is not None and not record_if(result):
             return result
         prompt_tokens, completion_tokens = extract_usage(result)
+        cache_read_tokens, cache_write_tokens = extract_cache_usage(result)
         self.record(
             role,
             model_name=model_name,
@@ -211,6 +282,8 @@ class CallLog:
             is_retry=is_retry,
             latency_ms=latency_ms,
             step_idx=step_idx,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
         return result
 

@@ -42,6 +42,13 @@ from src.msp.navmesh_density import (
 # runner's vlm_calls rollup is call_log.total(), retries included.
 from src.results.calls import CallLog, model_name_of
 
+# MAPG-10: compact scene-graph serialization for prompt text (stable
+# prefix first, current agent pose only) and per-role model tiering.
+from src.agents.serialization import (
+    resolve_serialization_mode,
+    serialize_scene_graph,
+)
+
 # Import the new Multi-Agent components. Agent classes are imported
 # lazily inside __init__ per cfg agents_impl (MAPG-09): the unified
 # stack (src/agents) needs no provider SDK at import time, while the
@@ -118,14 +125,67 @@ class MultiAgentMSPPlanner:
             self.agents_impl = "unified"
         click.secho(f"[MSP] agents_impl={self.agents_impl}", fg="cyan")
 
-        from src.agents.factory import create_role
-        self.orchestrator = create_role("orchestrator", provider=o_prov)
-        self.grounder = create_role("grounding", provider=g_prov)
-        self.spatial = create_role("spatial", provider=s_prov)
-        self.verifier = create_role("verifier", provider=v_prov)
-        self.qa = create_role("qa", provider=q_prov)
+        # ------------------------------------------------------------------
+        # MAPG-10: per-role model tiering. cfg model_tiers maps each
+        # role to null (the provider's main model; default, no behavior
+        # change) or a model-name override for that role only. The
+        # backend adapter for a tiered role is constructed with the
+        # override; CallLog records model_name per call so tiered runs
+        # are attributable.
+        # ------------------------------------------------------------------
+        from src.agents.factory import create_role, resolve_model_tiers
+        self.model_tiers, _tier_warnings = resolve_model_tiers(
+            _cfg_get(self.cfg, "model_tiers", None)
+        )
+        for _w in _tier_warnings:
+            click.secho(f"[MSP] {_w}", fg="yellow")
+        _active_tiers = {r: m for r, m in self.model_tiers.items() if m}
+        click.secho(
+            f"[MSP] model_tiers={_active_tiers if _active_tiers else 'none (all roles on main model)'}",
+            fg="cyan",
+        )
+
+        self.orchestrator = create_role(
+            "orchestrator", provider=o_prov, model_name=self.model_tiers["orchestrator"]
+        )
+        self.grounder = create_role(
+            "grounding", provider=g_prov, model_name=self.model_tiers["grounding"]
+        )
+        self.spatial = create_role(
+            "spatial", provider=s_prov, model_name=self.model_tiers["spatial"]
+        )
+        self.verifier = create_role(
+            "verifier", provider=v_prov, model_name=self.model_tiers["verifier"]
+        )
+        self.qa = create_role("qa", provider=q_prov, model_name=self.model_tiers["qa"])
         # Orphan role, deleted in MAPG-09 (constructed, never called).
         self.logical = None
+
+        # ------------------------------------------------------------------
+        # MAPG-10: scene-graph serialization mode for prompt text.
+        # "compact" (default) = line format, 2 dp, stable prefix first,
+        # current agent pose only (src/agents/serialization.py).
+        # "legacy_json" = the historical full-precision node-link dump.
+        # ------------------------------------------------------------------
+        self.sg_serialization, _sg_warn = resolve_serialization_mode(
+            _cfg_get(self.cfg, "sg_serialization", None)
+        )
+        if _sg_warn:
+            click.secho(f"[MSP] {_sg_warn}", fg="yellow")
+        click.secho(f"[MSP] sg_serialization={self.sg_serialization}", fg="cyan")
+
+        # ------------------------------------------------------------------
+        # MAPG-10 parse-once: the orchestrator decomposes a question
+        # that never changes within an episode
+        # (multi_agent_msp_planner used to re-call it every step). The
+        # typed decomposition is memoized and only re-requested when
+        # the failure history has changed since it was produced, which
+        # preserves prompt rule 5 ("if your previous parsing failed,
+        # choose a different interpretation"). d0 itself was already
+        # parse-once (deterministic parse in __init__, a844d6b).
+        # ------------------------------------------------------------------
+        self._orch_out_cache = None
+        self._orch_cache_history = None
         
         if "choices" in kwargs:
             self.blackboard.choices = kwargs["choices"]
@@ -433,6 +493,31 @@ class MultiAgentMSPPlanner:
                 frontiers.append({"id": str(fid), "name": "frontier", "position": pos_hab.tolist(), "size": list(FIXED_SIZE_M)})
         return objects, frontiers
 
+    def _serialized_scene_graph(self) -> str:
+        """Scene-graph prompt text under cfg sg_serialization (MAPG-10).
+
+        compact: line format from the filtered netx graph (stable
+        prefix first, current agent pose only). When the sim exposes no
+        netx graph (stubs, legacy paths) or serialization fails, the
+        legacy JSON string is used with the reason logged.
+        """
+        if self.sg_serialization == "compact":
+            graph = getattr(self.sg_sim, "filtered_netx_graph", None)
+            if graph is not None:
+                try:
+                    return serialize_scene_graph(
+                        graph,
+                        mode="compact",
+                        current_agent_id=getattr(self.sg_sim, "curr_agent_id", None),
+                    )
+                except Exception as e:
+                    click.secho(
+                        f"[MSP] compact serialization failed ({e}); "
+                        "falling back to legacy_json for this step.",
+                        fg="yellow",
+                    )
+        return self.sg_sim.scene_graph_str
+
     def get_next_action(self, agent_yaw_rad: float = 0.0, agent_pos_hab: Optional[np.ndarray] = None):
         if agent_pos_hab is None:
             agent_pos_hab = np.array([0, 0, 0], dtype=np.float32)
@@ -456,16 +541,18 @@ class MultiAgentMSPPlanner:
         click.secho(f"[Env] Pose: {agent_pos_hab.tolist()} | Yaw: {agent_yaw_rad:.3f} rad", fg="white")
         click.secho(f"[Env] Semantic State: {agent_state_str}", fg="white")
         click.secho(f"[Env] Found {len(objects)} Objects, {len(frontiers)} Frontiers", fg="white")
-        click.secho(f"[Scene Graph]\n{self.sg_sim.scene_graph_str}", fg="blue")
+        # MAPG-10: what gets logged is what the LLM sees.
+        sg_str = self._serialized_scene_graph()
+        click.secho(f"[Scene Graph]\n{sg_str}", fg="blue")
         click.secho("-" * 60, fg="white")
-        
+
         # 1. Update Blackboard
         self.blackboard.update_state(
             t=step_num,
             pose=agent_pos_hab,
             yaw=agent_yaw_rad,
             img_path=img_path,
-            sg_str=self.sg_sim.scene_graph_str,
+            sg_str=sg_str,
             agent_state=agent_state_str,
             objects=objects,
             frontiers=frontiers
@@ -534,12 +621,33 @@ class MultiAgentMSPPlanner:
             else:
                 click.secho(f"[Planner] QA Fast Path crashed. Proceeding with standard fallback.", fg="red")
         
-        # 2. Agent 1: Orchestrate
-        orch_out = self.call_log.call(
-            "orchestrator", self.orchestrator.process, self.blackboard,
-            model_name=model_name_of(self.orchestrator),
-            is_retry=is_retry_step, step_idx=step_num,
-        )
+        # 2. Agent 1: Orchestrate (MAPG-10 parse-once: the question is
+        # episode-constant, so the typed decomposition is memoized and
+        # only re-requested after the failure history changes, i.e.
+        # when prompt rule 5 could produce a different interpretation.
+        # Failed/schema-invalid outputs are never cached.)
+        if (
+            self._orch_out_cache is not None
+            and not self._orch_out_cache.get("error")
+            and self._orch_cache_history == self.blackboard.global_history
+        ):
+            orch_out = self._orch_out_cache
+            click.secho(
+                "[MSP] Orchestrator parse reused from episode cache (parse-once).",
+                fg="cyan",
+            )
+        else:
+            orch_out = self.call_log.call(
+                "orchestrator", self.orchestrator.process, self.blackboard,
+                model_name=model_name_of(self.orchestrator),
+                is_retry=is_retry_step, step_idx=step_num,
+            )
+            if isinstance(orch_out, dict) and not orch_out.get("error"):
+                self._orch_out_cache = orch_out
+                self._orch_cache_history = self.blackboard.global_history
+            else:
+                self._orch_out_cache = None
+                self._orch_cache_history = None
 
         # 3. Agent 2: Ground
         ground_out = self.call_log.call(
