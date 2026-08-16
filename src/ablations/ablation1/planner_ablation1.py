@@ -8,9 +8,9 @@ from src.utils.data_utils import get_latest_image
 
 from src.planners.vlm_planner_msp_debug import MSPEngineSmart, _parse_q_dist
 from src.multi_agent.blackboard import Blackboard
-from src.multi_agent.agents.grounding_agent import GroundingAgent
-from src.multi_agent.agents.verifier_agent import VerifierAgent
-from src.multi_agent.agents.qa_agent import QaAgent
+# MAPG-09: the per-backend agent classes are gone; the unified roles
+# keep the same process() contracts.
+from src.agents.factory import create_role
 
 from src.ablations.ablation1.orchestrator_fat import OrchestratorFatAgent
 
@@ -35,9 +35,9 @@ class PlannerAblation1:
         self.blackboard = Blackboard(question=question, mode=answer_mode)
         
         self.orchestrator = OrchestratorFatAgent()
-        self.grounder = GroundingAgent()
-        self.verifier = VerifierAgent()
-        self.qa = QaAgent()
+        self.grounder = create_role("grounding", provider="gemini")
+        self.verifier = create_role("verifier", provider="gemini")
+        self.qa = create_role("qa", provider="gemini")
         
         if "choices" in kwargs:
             self.blackboard.choices = kwargs["choices"]

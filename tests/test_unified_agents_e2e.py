@@ -205,13 +205,25 @@ def test_where_path_locks_anchor_then_runs_spatial_and_verifier(tmp_path):
     assert extra["action_type"] in ("goto_object", "lookaround", "goto_frontier", "answer")
 
 
-def test_agents_impl_legacy_is_selectable(tmp_path):
-    """The cfg switch reaches the planner (constructing legacy agents
-    needs the provider SDKs, so only the routing decision is checked
-    here: unknown values fall back to unified)."""
+def test_agents_impl_unknown_falls_back_to_unified(tmp_path):
     (tmp_path / "current_img_0.png").write_bytes(b"png")
     cfg = SimpleNamespace(agents_impl="not-a-real-impl")
     planner = _TestPlanner(
         cfg, StubSgSim(), QUESTION_WHERE, out_path=str(tmp_path)
     )
     assert planner.agents_impl == "unified"
+
+
+def test_agents_impl_legacy_raises_clearly(tmp_path):
+    """The legacy files are gone (MAPG-09 commit 2); a config still
+    naming them must fail loudly, not silently run something else."""
+    cfg = SimpleNamespace(agents_impl="legacy")
+    with pytest.raises(RuntimeError, match="MAPG-09"):
+        _TestPlanner(cfg, StubSgSim(), QUESTION_WHERE, out_path=str(tmp_path))
+
+
+def test_logical_role_is_gone():
+    from src.agents.factory import create_role
+
+    with pytest.raises(ValueError, match="logical"):
+        create_role("logical", provider="claude")

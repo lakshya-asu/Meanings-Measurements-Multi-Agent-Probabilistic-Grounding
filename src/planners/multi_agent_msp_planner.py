@@ -87,22 +87,30 @@ class MultiAgentMSPPlanner:
         g_prov = providers.get("grounding", "claude")
         s_prov = providers.get("spatial", "claude")
         v_prov = providers.get("verifier", "claude")
-        l_prov = providers.get("logical", "claude")
         q_prov = providers.get("qa", "claude")
-        
-        click.secho(f"Providers: Orch={o_prov}, Ground={g_prov}, Spatial={s_prov}, Verif={v_prov}, Logic={l_prov}, QA={q_prov}", fg="yellow")
+
+        click.secho(f"Providers: Orch={o_prov}, Ground={g_prov}, Spatial={s_prov}, Verif={v_prov}, QA={q_prov}", fg="yellow")
 
         # ------------------------------------------------------------------
-        # MAPG-09: agent implementation switch. "unified" (default) is
-        # the src/agents stack: one prompt per role shared across
-        # backends (byte-identical text, golden-tested), typed outputs
-        # where a parse failure is a counted schema_invalid, and
-        # adapters that return provider usage so CallLog token counts
-        # are real. "legacy" keeps the historical 24 per-backend agent
-        # classes for A/B comparison until their deletion.
+        # MAPG-09: unified agent stack (src/agents): one prompt per
+        # role shared across backends (byte-identical text,
+        # golden-tested), typed outputs where a parse failure is a
+        # counted schema_invalid, and adapters that return provider
+        # usage so CallLog token counts are real. The legacy 24
+        # per-backend agent files were deleted once the unified stack
+        # reached parity; cfg agents_impl remains as an explicit guard
+        # so stale legacy configs fail loudly instead of silently
+        # running a different implementation than they name.
         # ------------------------------------------------------------------
         self.agents_impl = str(_cfg_get(self.cfg, "agents_impl", "unified")).lower().strip()
-        if self.agents_impl not in ("unified", "legacy"):
+        if self.agents_impl == "legacy":
+            raise RuntimeError(
+                "agents_impl='legacy' is no longer available: the 24 "
+                "per-backend agent files were deleted in MAPG-09 after "
+                "the unified stack reached prompt and behavior parity "
+                "(tests/test_golden_prompts.py). Use agents_impl='unified'."
+            )
+        if self.agents_impl != "unified":
             click.secho(
                 f"[MSP] Unknown agents_impl={self.agents_impl!r}; using 'unified'.",
                 fg="yellow",
@@ -110,23 +118,14 @@ class MultiAgentMSPPlanner:
             self.agents_impl = "unified"
         click.secho(f"[MSP] agents_impl={self.agents_impl}", fg="cyan")
 
-        if self.agents_impl == "legacy":
-            from src.multi_agent.agent_setup import AgentFactory
-            self.orchestrator = AgentFactory.create_agent("orchestrator", provider=o_prov)
-            self.grounder = AgentFactory.create_agent("grounding", provider=g_prov)
-            self.spatial = AgentFactory.create_agent("spatial", provider=s_prov)
-            self.verifier = AgentFactory.create_agent("verifier", provider=v_prov)
-            self.logical = AgentFactory.create_agent("logical", provider=l_prov)
-            self.qa = AgentFactory.create_agent("qa", provider=q_prov)
-        else:
-            from src.agents.factory import create_role
-            self.orchestrator = create_role("orchestrator", provider=o_prov)
-            self.grounder = create_role("grounding", provider=g_prov)
-            self.spatial = create_role("spatial", provider=s_prov)
-            self.verifier = create_role("verifier", provider=v_prov)
-            self.qa = create_role("qa", provider=q_prov)
-            # Orphan role, not ported (constructed but never called).
-            self.logical = None
+        from src.agents.factory import create_role
+        self.orchestrator = create_role("orchestrator", provider=o_prov)
+        self.grounder = create_role("grounding", provider=g_prov)
+        self.spatial = create_role("spatial", provider=s_prov)
+        self.verifier = create_role("verifier", provider=v_prov)
+        self.qa = create_role("qa", provider=q_prov)
+        # Orphan role, deleted in MAPG-09 (constructed, never called).
+        self.logical = None
         
         if "choices" in kwargs:
             self.blackboard.choices = kwargs["choices"]

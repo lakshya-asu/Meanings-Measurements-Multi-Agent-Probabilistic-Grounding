@@ -11,12 +11,8 @@ from src.planners.vlm_planner_msp_debug import MSPEngineSmart, _parse_q_dist
 
 # Import the new Multi-Agent components
 from src.multi_agent.blackboard import Blackboard
-from src.multi_agent.agents.orchestrator_agent import OrchestratorAgent
-from src.multi_agent.agents.grounding_agent import GroundingAgent
-from src.multi_agent.agents.spatial_agent import SpatialAgent
-from src.multi_agent.agents.verifier_agent import VerifierAgent
-from src.multi_agent.agents.logical_agent import LogicalAgent
-from src.multi_agent.agents.qa_agent import QaAgent
+# MAPG-09: per-backend agent classes deleted; AgentFactory delegates
+# to the unified stack in src/agents.
 from src.multi_agent.agent_setup import AgentFactory
 
 def _write_json(path: Path, obj: Any) -> None:
@@ -55,7 +51,7 @@ class MultiAgentMSPPlanner:
         self.grounder = AgentFactory.create_agent("grounding", provider=g_prov)
         self.spatial = AgentFactory.create_agent("spatial", provider=s_prov)
         self.verifier = AgentFactory.create_agent("verifier", provider=v_prov)
-        self.logical = AgentFactory.create_agent("logical", provider=l_prov)
+        self.logical = None  # orphan role, deleted in MAPG-09
         self.qa = AgentFactory.create_agent("qa", provider=q_prov)
         
         if "choices" in kwargs:
