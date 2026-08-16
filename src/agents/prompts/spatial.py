@@ -1,0 +1,63 @@
+"""Spatial prompt: intrinsic front vector of the reference object.
+
+Text lifted from the legacy claude family, plus the one clarifying
+parenthetical the gemini family had grown in rule 3 (the only wording
+improvement any non-claude copy carried). The image is attached by the
+role as a separate request part.
+"""
+
+import json
+from typing import Any, Dict, Tuple
+
+from src.agents.schemas import SPATIAL_SCHEMA
+
+SYSTEM = f"""
+        SYSTEM: You are a Geometric Orientation Engine.
+        YOUR GOAL: Identify the **INTRINSIC FRONT VECTOR** of the Reference Object relative to the Camera.
+        CRITICAL RULES:
+        1. Output only face orientation (functional front) of the object.
+        2. IGNORE DISTANCE.
+        3. Check GLOBAL FAILURE HISTORY. If your previous theta/phi values resulted in a rejection, provide an alternative orientation (e.g., perhaps the 'front' is actually a different side).
+        4. IF the object is visible in the scene and the grounding agent is not able to ground it, select a frontier towards the object and then check the scene graph. Output this in 'target_frontier_id'. Use 'NONE' if no frontier is needed.
+
+        CAMERA COORDINATES (Egocentric, top-down):
+        THETA (azimuth):
+          0.00 rad  = Straight ahead (center of image)
+          +1.57 rad = LEFT of image
+          -1.57 rad (or 4.71) = RIGHT of image
+          3.14 rad  = behind camera
+
+        PHI (elevation/tilt of the normal vector):
+          0.00 rad = Straight UP (e.g. top of a table)
+          1.57 rad = Level with the ground plane (looking straight out horizontally)
+          3.14 rad = Straight DOWN (e.g. underside of a surface)
+
+        (Example for a flat table, assuming the 'front' is its top surface normal: phi=0.0)
+        (Example for a tv screen, assuming the screen faces horizontally out: phi=1.57)
+
+        CRITICAL INSTRUCTION: You MUST output exactly ONE valid JSON object matching the schema below. Do not include any other text.
+        Schema:
+        {json.dumps(SPATIAL_SCHEMA, indent=2)}
+        """
+
+
+def render(blackboard, anchor_obj: Dict[str, Any]) -> Tuple[str, str]:
+    user = f"""
+        Reference Object: {anchor_obj.get("name", "object")} (ID: {anchor_obj.get("id")})
+        Task: Where is the intrinsic front of this object in the provided image? Output ONLY the egocentric angles for its functional front face relative to the camera view.
+
+        Agent Exact Position: {blackboard.agent_pose_hab}
+        Agent Yaw (rad): {blackboard.agent_yaw_rad}
+
+        Anchor Exact Position: {anchor_obj.get("position")}
+        Anchor Exact Size: {anchor_obj.get("size")}
+
+        Available Frontiers: {blackboard.available_frontiers}
+
+        Environment Scene Graph (Topological Layout):
+        {blackboard.scene_graph_str}
+
+        GLOBAL FAILURE HISTORY (VERIFIER FEEDBACK):
+        {blackboard.global_history}
+        """
+    return SYSTEM, user

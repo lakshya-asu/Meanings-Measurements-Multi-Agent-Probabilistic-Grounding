@@ -64,6 +64,12 @@ vlm:
   add_history: False
   answer_mode: "msp_point"
 
+  # MAPG-09: agent implementation. "unified" (default) = src/agents
+  # stack, one prompt per role shared byte-identically across backends,
+  # typed outputs, real per-call token usage. "legacy" = the historical
+  # per-backend agent classes.
+  agents_impl: "unified"
+
   # >>> MSP No-BNN final config
   msp_nobnn:
     mode: "where"          # "which" or "where"

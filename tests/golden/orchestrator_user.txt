@@ -1,0 +1,14 @@
+
+        Current Question: Where is the location 3.0 meters in front of the tv?
+        Mode: where
+
+        Agent Exact Position: [1.0, 0.5, -2.0]
+        Agent Yaw (rad): 0.7853981633974483
+
+        GLOBAL FAILURE HISTORY (VERIFIER FEEDBACK):
+        Step 2 FAIL: Verifier rejected object_9 for anchor 'tv'.
+
+
+        Previous Execution Ledger (Use this to fix your parsing if the pipeline failed previously):
+        [PASS] Grounding (MatchObjects): {'anchor': 'tv', 'matched_object_id': 'object_1'}
+        

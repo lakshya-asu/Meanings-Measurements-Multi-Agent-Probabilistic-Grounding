@@ -42,15 +42,11 @@ from src.msp.navmesh_density import (
 # runner's vlm_calls rollup is call_log.total(), retries included.
 from src.results.calls import CallLog, model_name_of
 
-# Import the new Multi-Agent components
+# Import the new Multi-Agent components. Agent classes are imported
+# lazily inside __init__ per cfg agents_impl (MAPG-09): the unified
+# stack (src/agents) needs no provider SDK at import time, while the
+# legacy per-backend classes pull in their SDKs at module scope.
 from src.multi_agent.blackboard import Blackboard
-from src.multi_agent.agents.orchestrator_agent import OrchestratorAgent
-from src.multi_agent.agents.grounding_agent import GroundingAgent
-from src.multi_agent.agents.spatial_agent import SpatialAgent
-from src.multi_agent.agents.verifier_agent import VerifierAgent
-from src.multi_agent.agents.logical_agent import LogicalAgent
-from src.multi_agent.agents.qa_agent import QaAgent
-from src.multi_agent.agent_setup import AgentFactory
 
 def _cfg_get(cfg: Any, path: str, default: Any) -> Any:
     """Read a possibly nested cfg value ('frames.gt_front') safely."""
@@ -95,14 +91,42 @@ class MultiAgentMSPPlanner:
         q_prov = providers.get("qa", "claude")
         
         click.secho(f"Providers: Orch={o_prov}, Ground={g_prov}, Spatial={s_prov}, Verif={v_prov}, Logic={l_prov}, QA={q_prov}", fg="yellow")
-        
-        # Initialize Agents dynamically
-        self.orchestrator = AgentFactory.create_agent("orchestrator", provider=o_prov)
-        self.grounder = AgentFactory.create_agent("grounding", provider=g_prov)
-        self.spatial = AgentFactory.create_agent("spatial", provider=s_prov)
-        self.verifier = AgentFactory.create_agent("verifier", provider=v_prov)
-        self.logical = AgentFactory.create_agent("logical", provider=l_prov)
-        self.qa = AgentFactory.create_agent("qa", provider=q_prov)
+
+        # ------------------------------------------------------------------
+        # MAPG-09: agent implementation switch. "unified" (default) is
+        # the src/agents stack: one prompt per role shared across
+        # backends (byte-identical text, golden-tested), typed outputs
+        # where a parse failure is a counted schema_invalid, and
+        # adapters that return provider usage so CallLog token counts
+        # are real. "legacy" keeps the historical 24 per-backend agent
+        # classes for A/B comparison until their deletion.
+        # ------------------------------------------------------------------
+        self.agents_impl = str(_cfg_get(self.cfg, "agents_impl", "unified")).lower().strip()
+        if self.agents_impl not in ("unified", "legacy"):
+            click.secho(
+                f"[MSP] Unknown agents_impl={self.agents_impl!r}; using 'unified'.",
+                fg="yellow",
+            )
+            self.agents_impl = "unified"
+        click.secho(f"[MSP] agents_impl={self.agents_impl}", fg="cyan")
+
+        if self.agents_impl == "legacy":
+            from src.multi_agent.agent_setup import AgentFactory
+            self.orchestrator = AgentFactory.create_agent("orchestrator", provider=o_prov)
+            self.grounder = AgentFactory.create_agent("grounding", provider=g_prov)
+            self.spatial = AgentFactory.create_agent("spatial", provider=s_prov)
+            self.verifier = AgentFactory.create_agent("verifier", provider=v_prov)
+            self.logical = AgentFactory.create_agent("logical", provider=l_prov)
+            self.qa = AgentFactory.create_agent("qa", provider=q_prov)
+        else:
+            from src.agents.factory import create_role
+            self.orchestrator = create_role("orchestrator", provider=o_prov)
+            self.grounder = create_role("grounding", provider=g_prov)
+            self.spatial = create_role("spatial", provider=s_prov)
+            self.verifier = create_role("verifier", provider=v_prov)
+            self.qa = create_role("qa", provider=q_prov)
+            # Orphan role, not ported (constructed but never called).
+            self.logical = None
         
         if "choices" in kwargs:
             self.blackboard.choices = kwargs["choices"]

@@ -1,0 +1,42 @@
+
+        Target Entity to find: location
+        Anchors to map: [{"label": "tv", "modifiers": "large", "metric": "3.0 meters"}]
+
+        Current Scene Graph Candidates:
+        [
+  {
+    "id": "object_1",
+    "name": "tv",
+    "pos": [
+      2.0,
+      0.5,
+      -3.0
+    ]
+  },
+  {
+    "id": "object_2",
+    "name": "sofa",
+    "pos": [
+      0.0,
+      0.4,
+      -4.0
+    ]
+  }
+]
+
+        Agent Exact Position: [1.0, 0.5, -2.0]
+        Agent Yaw (rad): 0.7853981633974483
+
+        Agent Current Semantic State: Agent is in room_0 (living room).
+
+        GLOBAL FAILURE HISTORY:
+        Step 2 FAIL: Verifier rejected object_9 for anchor 'tv'.
+
+
+        Task:
+        1. Find the best matching object ID for each anchor.
+        2. Look at the provided image. If an anchor has a modifier (e.g., '2 seater', 'next to the wall'), you MUST use the image to verify which scene graph candidate visually matches that description.
+        3. CRITICAL: Read the GLOBAL FAILURE HISTORY carefully. If the Verifier explicitly rejected a specific object_id for an anchor, you MUST BLACKLIST it and choose the next best candidate. Never return a previously failed ID.
+        4. If an anchor is completely missing from the scene graph, set matched_object_id to 'NONE' and needs_exploration to true.
+        5. CRITICAL: Be highly flexible with object labels. A 'couch' is a 'sofa', a 'tv' is a 'monitor', a 'desk' is a 'table'. Match based on visual function and synonyms rather than strictly requiring the exact string.
+        

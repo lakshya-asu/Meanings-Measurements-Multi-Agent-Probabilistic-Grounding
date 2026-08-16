@@ -1,0 +1,52 @@
+
+        Current Question: Based on the items on the table, what room am I in?
+        Mode: eqa
+        Choices: ["A) Kitchen", "B) Bathroom", "C) Bedroom (DO NOT SELECT THIS OPTION)", "D) Living room"]
+
+        Agent Exact Position: [1.0, 0.5, -2.0]
+        Agent Yaw (rad): 0.7853981633974483
+
+        Scene Graph Candidates (with exact positions):
+        [
+  {
+    "id": "object_1",
+    "name": "tv",
+    "position": [
+      2.0,
+      0.5,
+      -3.0
+    ]
+  },
+  {
+    "id": "object_2",
+    "name": "sofa",
+    "position": [
+      0.0,
+      0.4,
+      -4.0
+    ]
+  }
+]
+
+        Available Frontiers:
+        [
+  {
+    "id": "frontier_7",
+    "position": [
+      4.0,
+      0.5,
+      -1.0
+    ]
+  }
+]
+
+        Environment Scene Graph (Topological Layout):
+        {"nodes": [{"id": "object_1", "name": "tv"}, {"id": "object_2", "name": "sofa"}, {"id": "room_0", "name": "living room"}]}
+
+        Current Environment Semantic State (Agent Room Node):
+        Agent is in room_0 (living room).
+
+        GLOBAL FAILURE HISTORY (VERIFIER FEEDBACK):
+        Step 2 FAIL: Verifier rejected object_9 for anchor 'tv'.
+
+        
