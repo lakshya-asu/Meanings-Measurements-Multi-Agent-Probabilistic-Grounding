@@ -11,6 +11,7 @@ import pytest
 from src.paths import REPO_ROOT, data_root, resolve_data_path
 from src.scripts.preflight import (
     backends_for,
+    bare_backend_price_gap,
     collect_aliases,
     missing_env_backends,
     parse_env_file,
@@ -235,6 +236,40 @@ class TestSelectedAliases:
 
     def test_non_model_vlm_name_is_not_an_alias(self):
         assert selected_aliases({"vlm": {"name": "msp_point"}}) == set()
+
+
+# ---------------------------------------------------------------------------
+# bare_backend_price_gap: the false green that used to report PASS
+# ---------------------------------------------------------------------------
+
+class TestBareBackendPriceGap:
+    def test_bare_backend_alone_cannot_be_price_checked(self):
+        # The regression. A bare selector names no concrete model, so
+        # nothing can be priced, and check (h) previously said PASS
+        # while verifying nothing at all.
+        gap = bare_backend_price_gap({"gemini"})
+        assert gap is not None
+        assert "gemini" in gap
+        assert "no concrete model" in gap
+
+    def test_concrete_model_has_no_gap(self):
+        assert bare_backend_price_gap({"claude-opus-4-6"}) is None
+
+    def test_bare_plus_concrete_has_no_gap(self):
+        # One concrete model is enough to make the price check
+        # meaningful, so a bare name alongside it is not a gap.
+        assert bare_backend_price_gap({"claude", "claude-opus-4-6"}) is None
+
+    def test_no_backends_at_all_is_not_a_gap(self):
+        # Nothing selected means the governor is not required; that is
+        # a different condition and must not be reported as this one.
+        assert bare_backend_price_gap(set()) is None
+        assert bare_backend_price_gap({"msp_point"}) is None
+
+    def test_gap_names_the_provider_not_the_alias(self):
+        # The message has to say which cap key is unverifiable, since
+        # that is what the reader has to go fix.
+        assert "openai" in bare_backend_price_gap({"gpt"})
 
 
 class TestEnvBackends:

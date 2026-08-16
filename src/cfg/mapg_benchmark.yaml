@@ -4,7 +4,28 @@ exp_name: msp${vlm.msp_nobnn.mode}
 output_path: outputs_qwen_spatial/${exp_name}
 results_filename: results_${vlm.msp_nobnn.mode}
 gpu: 0
-sim_gpu: 0
+# Renderer, changed from 0 on 2026-08-16 and deliberately NOT a silent
+# flip. Measured inside mapg_dev: gpu_device_id 0 raises
+# "Platform::WindowlessEglApplication::tryCreateContext(): unable to
+# find CUDA device 0 among 1 EGL devices", so the benchmark could not
+# load a scene at all. The container is CUDA-capable and
+# render-incapable: nvidia-smi sees the RTX 5080, but the only EGL
+# vendor present is 50_mesa.json, libEGL_nvidia does not exist in the
+# image, and there is no /dev/dri. Under WSL the NVIDIA runtime is not
+# injecting the graphics libraries even though the compose file
+# requests them, and no compose tweak fixes it.
+#
+# -1 selects software mesa (llvmpipe). Throughput is NOT the problem:
+# measured 117 fps at 480x640, 9 ms/frame, 2.6 s scene load, so the
+# VLM calls dominate by orders of magnitude.
+#
+# The real cost is scientific, and it is lakshya's call, not this
+# file's: the v1 98-query numbers predate the move to WSL and were
+# very likely drawn by a real GPU renderer. llvmpipe and NVIDIA GL do
+# not produce identical pixels, and the VLM arms consume those pixels.
+# The renderer is recorded in every run manifest so the confound is
+# detectable rather than arguable. See the board rendering-risk entry.
+sim_gpu: -1
 
 # Frozen benchmark split this config runs on (gate 2). Loaded and
 # SHA-verified through src/splits.py. Preflight checks it.

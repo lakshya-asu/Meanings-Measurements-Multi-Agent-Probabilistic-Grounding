@@ -174,6 +174,30 @@ def selected_aliases(cfg) -> set:
     return out
 
 
+def bare_backend_price_gap(aliases) -> Optional[str]:
+    """Reason the price check cannot verify anything, or None.
+
+    Lifted out of run_preflight so it can be tested directly (janus
+    condition c5). A bare backend selector such as 'gemini' names no
+    concrete model, so there is nothing to look a price up for; check
+    (h) used to report PASS anyway, claiming caps and prices were
+    covered when it had verified nothing. That branch is the one line
+    in this module with a proven history of being wrong, so it is the
+    one that most needs pinning by a test.
+    """
+    if not backends_for(aliases):
+        return None
+    if pinned_aliases_needed(aliases):
+        return None
+    capped = sorted({_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)})
+    return (
+        "selected backend(s) " + ", ".join(capped)
+        + " name no concrete model, so no price could be verified; set "
+          "vlm.name (or --select) to a pinned model id rather than a bare "
+          "backend name"
+    )
+
+
 def pinned_aliases_needed(aliases) -> set:
     """Aliases that must carry a pin: concrete model names, not bare
     backend selectors like 'gemini'."""
@@ -568,21 +592,11 @@ def run_preflight(cfg_arg: str, select=None) -> int:
         capped = sorted(
             {_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)}
         )
+        bare_gap = bare_backend_price_gap(aliases)
         if gov_problems:
             rep.report(FAIL, "cost_governor", "; ".join(gov_problems))
-        elif not pinned_aliases_needed(aliases):
-            # Every selected alias is a bare backend name, so there is
-            # no concrete model to look up a price for and nothing was
-            # actually verified. Saying PASS here would be a false
-            # green: the run would reach the governor and only then
-            # discover it cannot price what it is spending. Name a
-            # concrete model (vlm.name or --select) to get a real check.
-            rep.report(FAIL, "cost_governor",
-                       "selected backend(s) "
-                       + ", ".join(capped)
-                       + " name no concrete model, so no price could be "
-                         "verified; set vlm.name (or --select) to a pinned "
-                         "model id rather than a bare backend name")
+        elif bare_gap:
+            rep.report(FAIL, "cost_governor", bare_gap)
         else:
             rep.report(PASS, "cost_governor",
                        "caps and pinned prices cover enabled provider(s): "

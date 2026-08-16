@@ -37,7 +37,7 @@ from src.planners.multi_agent_msp_planner import MultiAgentMSPPlanner
 
 # Gate 4 results store: SQLite rows + run manifest (legacy JSON stays).
 from src.results.store import ResultsStore
-from src.results.manifest import build_manifest, write_manifest
+from src.results.manifest import build_manifest, set_coverage, write_manifest
 # MAPG-11: hard per-provider cost caps; breach aborts the run.
 from src.results.governor import CostGovernor, CostCapExceeded
 from src.schema.prediction import normalize_prediction
@@ -590,6 +590,10 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
                 f"[coverage] PARTIAL: skipped {len(uncovered_skipped)} "
                 f"question(s) across {len(missing)} scene_floor pair(s) with "
                 f"no init pose: {', '.join(missing)}", fg="yellow")
+        # janus c6: console scrollback is not evidence. The manifest is
+        # what the paper gets written from.
+        set_coverage(run_manifest, attempted, limit, uncovered_skipped)
+        write_manifest(run_manifest, output_path)
 
     except CostCapExceeded as exc:
         # MAPG-11: hard cost cap breach. Record the breach detail in
@@ -599,6 +603,11 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
         click.secho(f"[cost-governor] {exc}", fg="red")
         run_manifest["aborted_reason"] = "cost_cap_exceeded"
         run_manifest["cost_cap_breach"] = exc.detail()
+        # janus c6: a capped run never reaches the console coverage
+        # line, so without this a breached run would report no coverage
+        # at all. This is the path where it matters most: someone will
+        # want to know how far it got before the cap bit.
+        set_coverage(run_manifest, attempted, limit, uncovered_skipped)
         try:
             # Partial episode: episodes recorded so far are already in
             # SQLite; this preserves the breaching episode's calls too.
