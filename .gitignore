@@ -72,3 +72,11 @@ datasets/
 # ignore experiment outputs
 spatial_experiment/*.zip
 *.zip
+
+# Crash dumps. Habitat segfaults drop multi-GB core files into the repo
+# root; this repo goes public with the paper, so they must never be
+# stageable by accident.
+core
+core.*
+*.core
+vgcore.*
