@@ -49,11 +49,13 @@ Normalization
 -------------
 These densities are deliberately unnormalized (no vMF constant, no
 radial truncation constant, no Jacobian, no free-space mask). Proper
-normalization over the navigable free space Omega_free is deferred to
-the navmesh-masking work item (P1), which restricts the density to
-navigable cells and computes Z by logsumexp over the grid. Until then,
-only argmax comparisons under a single fixed parameter set are
-meaningful; integrated quantities are not.
+normalization over the navigable free space Omega_free lives in
+src.msp.navmesh_density (MAPG-12): the density is masked to navigable
+navmesh cells and Z is computed there by logsumexp over the grid
+(log_Z = log cell_area + logsumexp of the cell log densities). Raw
+values from this module remain unnormalized: only argmax comparisons
+under a single fixed parameter set are meaningful here; integrated
+quantities go through NavmeshGrid.
 
 The radial (metric) Gaussian term and the semantic Gaussian term are
 unchanged from the previous implementation.

@@ -27,6 +27,15 @@ from src.schema.prediction import normalize_prediction
 # MSP imports
 from src.msp.pdf import combined_logpdf as _combined_logpdf
 
+# MAPG-12: navmesh masking + renormalization (pure numpy, pathfinder
+# injected; no habitat import at module level)
+from src.msp.navmesh_density import (
+    DEFAULT_CELL_SIZE_M,
+    DEFAULT_TAU_M,
+    apply_density_masking,
+    resolve_masking_mode,
+)
+
 # P0 fix 1: single deterministic source for d0 (no silent 1.0 m default)
 from src.parsing.metric_literal import (
     parse_metric_literal,
@@ -646,6 +655,24 @@ class VLMPlannerMSP_Smart:
 
         self.msp_engine = MSPEngineSmart()
 
+        # ------------------------------------------------------------------
+        # MAPG-12: navmesh masking + renormalization. Under
+        # density_masking=navmesh (default) the WHERE point guess is the
+        # argmax navigable cell of the masked, renormalized density
+        # instead of the analytic anchor + r * dir construction; "off" is
+        # the ablation arm (old behavior). No pathfinder reachable means
+        # fall back to off with the reason recorded in the trace.
+        # ------------------------------------------------------------------
+        self._density_masking, _dm_warn = resolve_masking_mode(
+            getattr(cfg, "density_masking", None)
+        )
+        if _dm_warn:
+            print(f"[MSP SMART] {_dm_warn}")
+        self._navmesh_grid_m = float(
+            getattr(cfg, "navmesh_grid_m", DEFAULT_CELL_SIZE_M) or DEFAULT_CELL_SIZE_M
+        )
+        self._navmesh_grid = None
+
         # MAPG-02: per-call accounting. The runner's vlm_calls rollup is
         # call_log.total() (2 calls on a full step: kernel + selector; 0
         # on anchor-missing steps; 1 when the kernel fails before the
@@ -694,6 +721,22 @@ class VLMPlannerMSP_Smart:
     @property
     def t(self) -> int:
         return self._t
+
+    def _get_pathfinder(self):
+        """The habitat pathfinder reachable through sg_sim, or None.
+
+        MAPG-12: used (get_bounds + snap_point) to build the navmesh
+        grid for density masking. Same access pattern as the verifier's
+        injected snap function in the multi-agent planner.
+        """
+        try:
+            pf = getattr(self.sg_sim, "pathfinder", None)
+            if pf is None:
+                sim = getattr(self.sg_sim, "sim", None)
+                pf = getattr(sim, "pathfinder", None) if sim is not None else None
+            return pf
+        except Exception:
+            return None
 
     def _get_scene_data(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         objects: List[Dict[str, Any]] = []
@@ -1170,6 +1213,33 @@ Output STRICT JSON only:
         point_radius_m = float(dist_m) if dist_m is not None else _NO_METRIC_POINT_GUESS_RADIUS_M
         point_xyz = (anchor_pos + point_radius_m * dir_world).astype(np.float32)
 
+        # MAPG-12: under density_masking=navmesh the point guess is the
+        # argmax navigable cell of the masked, renormalized density (the
+        # same anchor-only params score_point uses), replacing the
+        # analytic construction above. Fallbacks (off, no pathfinder,
+        # build failure) keep the analytic guess and record the reason.
+        masked_pdf_params = {
+            **self.msp_engine._get_metric_semantic_params(
+                anchor_pos_hab=anchor_pos,
+                candidate_pos_hab=anchor_pos,
+                candidate_size=[0.5, 0.5, 0.5],
+                distance_m=dist_m,
+            ),
+            "theta0": float(kernel["theta"]),
+            "phi0": float(kernel["phi"]),
+            "kappa": float(kernel["kappa"]),
+        }
+        masked_xyz, density_masking_record, self._navmesh_grid = apply_density_masking(
+            mode=self._density_masking,
+            pathfinder=self._get_pathfinder(),
+            pdf_params=masked_pdf_params,
+            cell_size_m=self._navmesh_grid_m,
+            tau_m=DEFAULT_TAU_M,
+            grid=self._navmesh_grid,
+        )
+        if masked_xyz is not None:
+            point_xyz = np.asarray(masked_xyz, dtype=np.float32)
+
         point_logp = self.msp_engine.score_point(
             point_hab=point_xyz,
             anchor_pos_hab=anchor_pos,
@@ -1178,7 +1248,14 @@ Output STRICT JSON only:
             candidate_size=[0.5, 0.5, 0.5],
         )
 
-        point_guess = {"id": "POINT_GUESS", "target_xyz_hab": point_xyz.tolist(), "msp_score": float(point_logp)}
+        point_guess = {
+            "id": "POINT_GUESS",
+            "target_xyz_hab": point_xyz.tolist(),
+            "msp_score": float(point_logp),
+            # MAPG-12 provenance: density_masked, log_Z, mass_in_tau_ball
+            # (tau 1.0 m), fallback reason when unmasked.
+            "density_masking": density_masking_record,
+        }
 
         K_OBJ = int(getattr(self.cfg, "selector_topk_objects", 12))
         K_FR = int(getattr(self.cfg, "selector_topk_frontiers", 8))

@@ -29,6 +29,15 @@ from src.parsing.metric_literal import (
 # P0 fix 3: programmatic verifier checks
 from src.verification.checks import run_checks, failed_reasons
 
+# MAPG-12: navmesh masking + renormalization of the composed density
+# (pure numpy; the pathfinder is injected, no habitat import here)
+from src.msp.navmesh_density import (
+    DEFAULT_CELL_SIZE_M,
+    DEFAULT_TAU_M,
+    apply_density_masking,
+    resolve_masking_mode,
+)
+
 # MAPG-02: real per-call accounting. One CallLog per episode; the
 # runner's vlm_calls rollup is call_log.total(), retries included.
 from src.results.calls import CallLog, model_name_of
@@ -129,6 +138,30 @@ class MultiAgentMSPPlanner:
         click.secho(f"[MSP] kernel_bandwidths={self.kernel_bandwidths}", fg="cyan")
         # Per-candidate size provenance: {id: (source, reason)}.
         self._size_provenance = {}
+
+        # ------------------------------------------------------------------
+        # MAPG-12: navmesh masking + renormalization. cfg ``density_masking``
+        # is "navmesh" (default: point estimation is the argmax navigable
+        # cell of the masked, renormalized density) or "off" (ablation arm:
+        # the pre-MAPG-12 unmasked estimator, bit-identical). When no
+        # pathfinder is reachable through sg_sim the step falls back to off
+        # with the reason recorded in pdf_params. The grid geometry is
+        # navmesh-only, so it is built once and reused across steps.
+        # ------------------------------------------------------------------
+        self.density_masking, _dm_warn = resolve_masking_mode(
+            _cfg_get(self.cfg, "density_masking", None)
+        )
+        if _dm_warn:
+            click.secho(f"[MSP] {_dm_warn}", fg="yellow")
+        self.navmesh_grid_m = float(
+            _cfg_get(self.cfg, "navmesh_grid_m", DEFAULT_CELL_SIZE_M)
+        )
+        click.secho(
+            f"[MSP] density_masking={self.density_masking} "
+            f"navmesh_grid_m={self.navmesh_grid_m}",
+            fg="cyan",
+        )
+        self._navmesh_grid = None
 
         # Persistent context
         self.locked_anchor_id = None
@@ -288,6 +321,22 @@ class MultiAgentMSPPlanner:
         pts = np.asarray([o["position"] for o in objects], dtype=np.float32)
         return pts.min(axis=0).tolist(), pts.max(axis=0).tolist()
 
+    def _get_pathfinder(self):
+        """The habitat pathfinder reachable through sg_sim, or None.
+
+        Same access pattern as the injected snap function: sg_sim may
+        expose it directly or via its wrapped sim. MAPG-12 additionally
+        uses it (get_bounds + snap_point) to build the navmesh grid.
+        """
+        try:
+            pf = getattr(self.sg_sim, "pathfinder", None)
+            if pf is None:
+                sim = getattr(self.sg_sim, "sim", None)
+                pf = getattr(sim, "pathfinder", None) if sim is not None else None
+            return pf
+        except Exception:
+            return None
+
     def _get_navmesh_snap_fn(self):
         """Navmesh snap function, injectable and skippable.
 
@@ -296,10 +345,7 @@ class MultiAgentMSPPlanner:
         as skipped instead of silently passing.
         """
         try:
-            pf = getattr(self.sg_sim, "pathfinder", None)
-            if pf is None:
-                sim = getattr(self.sg_sim, "sim", None)
-                pf = getattr(sim, "pathfinder", None) if sim is not None else None
+            pf = self._get_pathfinder()
             if pf is None or not hasattr(pf, "snap_point"):
                 return None
 
@@ -598,6 +644,46 @@ class MultiAgentMSPPlanner:
         )
         point_xyz = np.asarray(point_estimate["xyz_chosen_hab"], dtype=np.float32)
 
+        # ------------------------------------------------------------------
+        # MAPG-12: masked, renormalized point estimate. Under
+        # density_masking=navmesh (default) the point is the argmax
+        # navigable cell of the density masked to Omega_free and
+        # renormalized (log_Z by logsumexp over navmesh grid cells), so
+        # it is navigable by construction. The pdf params are exactly the
+        # ones estimate_point_from_pdf scores with (anchor-only params,
+        # flatten_semantic_for_where default True). Fallbacks (mode off,
+        # no pathfinder, build failure) keep the unmasked estimate above
+        # and record the reason.
+        # ------------------------------------------------------------------
+        masked_pdf_params = {
+            k: v
+            for k, v in self.msp_engine._build_anchor_only_params(
+                anchor_pos_hab=anchor_pos,
+                anchor_size=engine_anchor_size,
+                distance_m=dist_m,
+                kernel_params=kernel_params_used,
+                planar=True,
+                flatten_semantic=True,
+            ).items()
+            if not str(k).startswith("_")
+        }
+        masked_xyz, density_masking_record, self._navmesh_grid = apply_density_masking(
+            mode=self.density_masking,
+            pathfinder=self._get_pathfinder(),
+            pdf_params=masked_pdf_params,
+            cell_size_m=self.navmesh_grid_m,
+            tau_m=DEFAULT_TAU_M,
+            grid=self._navmesh_grid,
+        )
+        if masked_xyz is not None:
+            point_xyz = np.asarray(masked_xyz, dtype=np.float32)
+        elif density_masking_record.get("density_masking_reason"):
+            click.secho(
+                f"[MSP] density masking inactive: "
+                f"{density_masking_record['density_masking_reason']}",
+                fg="yellow",
+            )
+
         # Extract the continuous PDF parameters from the shared debug trace
         # (All candidates share the same anchor-centric pdf params)
         extracted_pdf_params = {}
@@ -617,6 +703,9 @@ class MultiAgentMSPPlanner:
         extracted_pdf_params["anchor_size_fallback_reason"] = anchor_size_reason
         extracted_pdf_params["anchor_size_hab"] = anchor_size_hab
         extracted_pdf_params["bandwidth_scale_m"] = float(bandwidth_scale_m)
+        # MAPG-12: masking provenance (density_masked, log_Z,
+        # mass_in_tau_ball at tau = 1.0 m, fallback reason if any).
+        extracted_pdf_params.update(density_masking_record)
 
         metric_parse_record = {
             "value_m": self.metric_parse.value_m,
