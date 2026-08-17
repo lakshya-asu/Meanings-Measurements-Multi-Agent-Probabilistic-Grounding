@@ -2,6 +2,84 @@ import rerun as rr
 import rerun.blueprint as rrb
 import numpy as np
 
+
+def _short_float(value, digits=2):
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def simplify_step_transcript(ledger, final_decision):
+    """Build a compact, structured transcript without model reasoning text."""
+    role_lines = {name: [] for name in ("orchestrator", "grounding", "spatial", "verifier")}
+    for event in ledger or []:
+        agent = str(event.get("agent", "")).strip().lower()
+        if agent not in role_lines:
+            continue
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        lines = [f"{event.get('type', 'Event')} | {event.get('status', 'INFO')}"]
+
+        if agent == "orchestrator":
+            lines.append(f"Target: {details.get('target_entity', 'n/a')}")
+            lines.append(f"Relation: {details.get('composition_logic', 'n/a')}")
+            anchors = []
+            for anchor in details.get("anchors", []) or []:
+                label = str(anchor.get("label", "object")).strip()
+                modifier = str(anchor.get("modifiers", "")).strip()
+                metric = str(anchor.get("metric", "")).strip()
+                anchors.append(" ".join(part for part in (modifier, label, metric) if part))
+            lines.append("Anchors: " + (", ".join(anchors) if anchors else "none"))
+        elif agent == "grounding":
+            grounded = []
+            for anchor in details.get("grounded_anchors", []) or []:
+                grounded.append(
+                    f"{anchor.get('anchor_label', 'object')} -> "
+                    f"{anchor.get('matched_object_id', 'NONE')} "
+                    f"({_short_float(anchor.get('confidence'))})"
+                )
+            lines.append("Matches: " + (", ".join(grounded) if grounded else "none"))
+            lines.append(f"Explore: {bool(details.get('needs_exploration', False))}")
+        elif agent == "spatial":
+            lines.extend(
+                [
+                    f"Theta: {_short_float(details.get('theta'))} rad",
+                    f"Phi: {_short_float(details.get('phi'))} rad",
+                    f"Kappa: {_short_float(details.get('kappa'))}",
+                    f"Frontier: {details.get('target_frontier_id', 'NONE')}",
+                ]
+            )
+        elif agent == "verifier":
+            lines.append(f"Verdict: {details.get('status', event.get('status', 'n/a'))}")
+            for check_name, check in (details.get("checks", {}) or {}).items():
+                if check_name == "all_ok" or not isinstance(check, dict):
+                    continue
+                state = "SKIP" if check.get("skipped") else "PASS" if check.get("ok") else "FAIL"
+                lines.append(f"{check_name}: {state}")
+
+        role_lines[agent].append("\n".join(lines))
+
+    role_summaries = {
+        role: "\n\n".join(parts) if parts else "No event this step."
+        for role, parts in role_lines.items()
+    }
+    decision = final_decision or {}
+    decision_lines = [
+        f"Action: {decision.get('action_type', 'n/a')}",
+        f"Target: {decision.get('chosen_id', 'n/a')}",
+        f"Confidence: {_short_float(decision.get('confidence'))}",
+    ]
+    target = decision.get("target_location")
+    if isinstance(target, (list, tuple)) and len(target) >= 3:
+        decision_lines.append("Point: " + ", ".join(_short_float(v) for v in target[:3]))
+    pdf = decision.get("pdf_params") if isinstance(decision.get("pdf_params"), dict) else {}
+    if pdf:
+        decision_lines.append(f"Navmesh masked: {bool(pdf.get('density_masked', False))}")
+        if pdf.get("mass_in_tau_ball") is not None:
+            decision_lines.append(f"Mass within 1 m: {_short_float(pdf.get('mass_in_tau_ball'), 3)}")
+    return {"roles": role_summaries, "decision": "\n".join(decision_lines)}
+
+
 class RRLogger:
     def __init__(self, output_path):
         # Initialize Rerun and specify the .rrd file for logging
@@ -13,55 +91,77 @@ class RRLogger:
 
         self.primary_camera_entity = "world/camera"
 
-        # Define a blueprint with an image space for logging the RGB image data
-        blueprint = rrb.Horizontal(
-            rrb.Vertical(
-                rrb.Spatial3DView(name="3D"),
-                rrb.TextDocumentView(name="PlannerOutput"),
-                ),
-            # Note that we re-project the annotations into the 2D views:
-            # For this to work, the origin of the 2D views has to be a pinhole camera,
-            # this way the viewer knows how to project the 3D annotations into the 2D views.
-            rrb.Vertical(
-                rrb.Spatial2DView(
-                    name="RGB",
-                    origin=self.primary_camera_entity,
-                    contents=["$origin/rgb", "/world/annotations/**"],
-                ),
-                rrb.Spatial2DView(
-                        name="Semantic Labels",
-                        origin=self.primary_camera_entity,
-                        contents=["$origin/semantic", "/world/annotations/**"],
-                ),
-                rrb.Spatial2DView(
-                        name="Instance Labels",
-                        origin=self.primary_camera_entity,
-                        contents=["$origin/instance", "/world/annotations/**"],
-                ),
-                rrb.Spatial2DView(
-                        name="Depth",
-                        origin=self.primary_camera_entity,
-                        contents=["$origin/depth", "/world/annotations/**"],
-                ),
+        # Keep the simulation large and central. Compact task and agent views
+        # live on the sides so they never cover the 3D scene.
+        left_panel = rrb.Vertical(
+            rrb.TextDocumentView(
+                name="Question and pose", origin="/ui/question", contents=["/ui/question"]
             ),
-            # rrb.Vertical(
-            #     rrb.Spatial2DView(
-            #         name="Occupied",
-            #         origin=self.primary_camera_entity,
-            #         contents=["$origin/unoccupied", "/world/annotations/**"],
-            #     ),
-            #     rrb.Spatial2DView(
-            #             name="Explored",
-            #             origin=self.primary_camera_entity,
-            #             contents=["$origin/unexplored", "/world/annotations/**"],
-            #     ),
-            #     rrb.Spatial2DView(
-            #             name="TSDF",
-            #             origin=self.primary_camera_entity,
-            #             contents=["$origin/tsdf", "/world/annotations/**"],
-            #     ),
-            # )
-                
+            rrb.TextDocumentView(
+                name="Orchestrator",
+                origin="/ui/transcripts/orchestrator",
+                contents=["/ui/transcripts/orchestrator"],
+            ),
+            rrb.TextDocumentView(
+                name="Grounding",
+                origin="/ui/transcripts/grounding",
+                contents=["/ui/transcripts/grounding"],
+            ),
+            row_shares=[0.2, 0.4, 0.4],
+            name="Task and grounding",
+        )
+
+        camera_tabs = rrb.Tabs(
+            rrb.Spatial2DView(
+                name="RGB",
+                origin=self.primary_camera_entity,
+                contents=["$origin/rgb", "/world/annotations/**"],
+            ),
+            rrb.Spatial2DView(
+                name="Semantic Labels",
+                origin=self.primary_camera_entity,
+                contents=["$origin/semantic", "/world/annotations/**"],
+            ),
+            rrb.Spatial2DView(
+                name="Instance Labels",
+                origin=self.primary_camera_entity,
+                contents=["$origin/instance", "/world/annotations/**"],
+            ),
+            rrb.Spatial2DView(
+                name="Depth",
+                origin=self.primary_camera_entity,
+                contents=["$origin/depth", "/world/annotations/**"],
+            ),
+            active_tab=0,
+            name="Camera views",
+        )
+
+        right_panel = rrb.Vertical(
+            rrb.TextDocumentView(
+                name="Decision", origin="/ui/decision", contents=["/ui/decision"]
+            ),
+            rrb.TextDocumentView(
+                name="Spatial",
+                origin="/ui/transcripts/spatial",
+                contents=["/ui/transcripts/spatial"],
+            ),
+            rrb.TextDocumentView(
+                name="Verifier",
+                origin="/ui/transcripts/verifier",
+                contents=["/ui/transcripts/verifier"],
+            ),
+            camera_tabs,
+            row_shares=[0.18, 0.2, 0.27, 0.35],
+            name="Decision and camera",
+        )
+
+        blueprint = rrb.Horizontal(
+            left_panel,
+            rrb.Spatial3DView(
+                name="Full simulation", origin="/world", contents=["/world/**"]
+            ),
+            right_panel,
+            column_shares=[0.24, 0.52, 0.24],
         )
 
         rr.send_blueprint(blueprint)
@@ -98,12 +198,16 @@ class RRLogger:
             'room-to-room': [0,0,0],
         }
 
+        self._transcript_history = {
+            role: [] for role in ("orchestrator", "grounding", "spatial", "verifier")
+        }
+
         self.reset()
 
     def reset(self):
         self._t = 0
         self._dt = 0.1
-        rr.set_time_seconds(self._timeline, self._t)
+        rr.set_time(self._timeline, duration=self._t)
 
     def log_mesh_data(self, mesh_vertices, mesh_colors, mesh_triangles):
         
@@ -114,7 +218,7 @@ class RRLogger:
                 vertex_colors=mesh_colors,
                 triangle_indices=mesh_triangles,
             ),
-            timeless=False,
+            static=False,
         )
     
     def log_agent_data(self, agent_positions):
@@ -151,12 +255,42 @@ class RRLogger:
 
     def log_text_data(self, text):
         rr.log(
-            "PlannerOutput",
+            "ui/decision",
             rr.TextDocument(
                 text,
                 media_type=rr.MediaType.TEXT,
             ),
         )
+
+    def log_step_transcript(self, question, step_num, agent_pose, ledger, final_decision):
+        summary = simplify_step_transcript(ledger, final_decision)
+        pose_text = ", ".join(_short_float(value) for value in agent_pose[:3])
+        rr.log(
+            "ui/question",
+            rr.TextDocument(
+                f"{question}\n\nStep: {step_num}\nAgent pose: {pose_text}",
+                media_type=rr.MediaType.TEXT,
+            ),
+        )
+        for role, text in summary["roles"].items():
+            if text == "No event this step.":
+                continue
+            self._transcript_history[role].append(f"Step {step_num}\n{text}")
+            rr.log(
+                f"ui/transcripts/{role}",
+                rr.TextDocument(
+                    "\n\n".join(self._transcript_history[role]),
+                    media_type=rr.MediaType.TEXT,
+                ),
+            )
+        rr.log(
+            "ui/decision",
+            rr.TextDocument(
+                f"Step {step_num}\n{summary['decision']}",
+                media_type=rr.MediaType.TEXT,
+            ),
+        )
+        return summary
 
     def log_navmesh_data(self, navmesh):
         # log the frontier nodes with color red
@@ -203,7 +337,7 @@ class RRLogger:
                 colors=bb_info['bb_colors']
             ),
             rr.InstancePoses3D(mat3x3=bb_info['bb_mat3x3']),
-            timeless=False,
+            static=False,
         )
 
     def log_img_data(self, rgb, labels):
@@ -262,7 +396,7 @@ class RRLogger:
 
     def step(self):
         self._t += self._dt
-        rr.set_time_seconds(self._timeline, self._t)
+        rr.set_time(self._timeline, duration=self._t)
 
     def log_clear(self, namespace):
         rr.log(namespace, rr.Clear(recursive=True))

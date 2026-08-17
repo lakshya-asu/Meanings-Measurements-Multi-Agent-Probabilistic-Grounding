@@ -169,6 +169,18 @@ class ResultsStore:
             )
         return run_id
 
+    def update_run_manifest(self, run_id: str, manifest: Dict[str, Any]) -> None:
+        """Refresh a run manifest without changing its current status."""
+        if not isinstance(manifest, dict) or str(manifest.get("run_id")) != str(run_id):
+            raise ValueError("manifest run_id must match the run being updated")
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE runs SET manifest=?, updated_at=? WHERE run_id=?",
+                (json.dumps(manifest, default=_json_default), _now(), str(run_id)),
+            )
+        if cur.rowcount != 1:
+            raise ValueError(f"run {run_id!r} is not registered")
+
     def finish_run(self, run_id: str, status: str = "complete") -> None:
         """Mark a run complete or aborted."""
         if status not in ("running", "complete", "aborted"):

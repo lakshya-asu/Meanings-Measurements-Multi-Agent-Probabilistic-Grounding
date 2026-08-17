@@ -4,6 +4,8 @@ Pure logic only. No habitat, no real dataset, no network.
 """
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from src.scripts.preflight import (
     missing_env_backends,
     parse_env_file,
     pinned_aliases_needed,
+    probe_import,
     selected_aliases,
     unpinned_aliases,
 )
@@ -299,3 +302,19 @@ class TestEnvBackends:
         env = {"DASHSCOPE_API_KEY": "   "}
         missing = missing_env_backends({"qwen3-vl-plus"}, env)
         assert [b for b, _ in missing] == ["qwen"]
+
+
+def test_probe_import_uses_isolated_interpreter(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert probe_import("habitat_sim") == (True, "")
+    assert seen["cmd"][0] == sys.executable
+    assert seen["cmd"][1] == "-c"
+    assert "habitat_sim" in seen["cmd"][2]
+    assert seen["kwargs"]["check"] is False

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -329,6 +330,36 @@ def in_container() -> bool:
     return os.path.exists("/.dockerenv") or os.path.isdir("/workspace")
 
 
+def probe_import(module_name: str) -> tuple[bool, str]:
+    """Import one heavy dependency in an isolated interpreter.
+
+    Habitat and Hydra each import cleanly in this container, but importing
+    both into one preflight process corrupts shared native logger state and
+    segfaults during Python shutdown. A child process gives each probe its
+    own native teardown and lets preflight check the real exit status.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib; importlib.import_module(" + repr(str(module_name)) + ")",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if proc.returncode == 0:
+        return True, ""
+    detail = (proc.stderr or proc.stdout or "").strip()
+    if not detail:
+        detail = f"child interpreter exited {proc.returncode}"
+    return False, detail
+
+
 # ---------------------------------------------------------------------------
 # Cfg loading
 # ---------------------------------------------------------------------------
@@ -376,7 +407,7 @@ class Reporter:
         print(f"[{status}] {label}: {msg}")
 
 
-def run_preflight(cfg_arg: str, select=None) -> int:
+def run_preflight(cfg_arg: str, select=None, init_poses=None) -> int:
     rep = Reporter()
 
     # (a) cfg loads and paths resolve
@@ -387,6 +418,9 @@ def run_preflight(cfg_arg: str, select=None) -> int:
         print("PREFLIGHT FAILED: 1 check failed (cannot continue without cfg)")
         return 1
     data = cfg.get("data") or {}
+    if init_poses:
+        data["init_pose_data_path"] = str(init_poses)
+        cfg["data"] = data
     resolved = {}
     for key in ("question_data_path", "init_pose_data_path",
                 "scene_data_path", "semantic_annot_data_path"):
@@ -570,13 +604,13 @@ def run_preflight(cfg_arg: str, select=None) -> int:
     # `source /catkin_ws/devel/setup.bash` works. Without this check
     # preflight goes all green while the runner cannot start at all.
     for mod in ("numpy", "habitat_sim", "hydra_python"):
-        try:
-            __import__(mod)
+        ok, detail = probe_import(mod)
+        if ok:
             rep.report(PASS if inside else INFO, "imports", f"{mod} importable")
-        except Exception as e:
+        else:
             if inside:
                 rep.report(FAIL, "imports",
-                           f"{mod} not importable inside the container: {e}")
+                           f"{mod} not importable inside the container: {detail}")
             else:
                 rep.report(INFO, "imports",
                            f"{mod} not importable outside the container "
@@ -621,8 +655,13 @@ def main(argv=None):
                              "launch: a runner invoked with vlm.name=X must "
                              "be preflighted with --select X, otherwise you "
                              "are checking a different arm than you run.")
+    parser.add_argument(
+        "--init-poses",
+        metavar="PATH",
+        help="runtime init-pose CSV override, matching the benchmark runner",
+    )
     args = parser.parse_args(argv)
-    return run_preflight(args.cfg, select=args.select)
+    return run_preflight(args.cfg, select=args.select, init_poses=args.init_poses)
 
 
 if __name__ == "__main__":

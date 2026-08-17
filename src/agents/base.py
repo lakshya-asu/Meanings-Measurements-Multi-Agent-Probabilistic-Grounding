@@ -45,6 +45,18 @@ class BackendError(RuntimeError):
     """Raised by adapters for transport or configuration failures."""
 
 
+class BackendReplyError(BackendError):
+    """A paid response arrived but its JSON payload was unusable.
+
+    Provider usage is kept on the exception so CallLog can recover exact
+    token counts even though the parsed result cannot be returned.
+    """
+
+    def __init__(self, message: str, *, usage: Optional[Dict[str, Optional[int]]] = None):
+        super().__init__(message)
+        self.usage = usage
+
+
 def text_part(text: str, cache: bool = False) -> Dict[str, Any]:
     """A text user-part. ``cache=True`` marks it as the end of a
     stable prefix (MAPG-10): the claude adapter turns the mark into a
@@ -153,5 +165,11 @@ class Backend:
         t0 = time.perf_counter()
         raw_text, usage = self._transport(request)
         latency_ms = (time.perf_counter() - t0) * 1000.0
-        parsed = parse_json_reply(raw_text)
+        try:
+            parsed = parse_json_reply(raw_text)
+        except Exception as exc:
+            raise BackendReplyError(
+                "model reply could not be parsed as a JSON object",
+                usage=usage,
+            ) from exc
         return parsed, usage, latency_ms

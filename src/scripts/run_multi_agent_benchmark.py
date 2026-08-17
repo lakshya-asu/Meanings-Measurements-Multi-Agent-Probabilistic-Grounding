@@ -93,7 +93,17 @@ def _warmup_like_eqa(pipeline, habitat_data, rr_logger, tsdf_planner, sg_sim, ou
         yaw_deg = yaw0_deg + (360.0 * k / num_yaws)
         poses = habitat_data.get_init_poses_eqa(np.array(pos), float(yaw_deg), 0.0)
         try:
-            run(pipeline, habitat_data, poses, output_path, rr_logger, tsdf_planner, sg_sim, save_image, segmenter)
+            run(
+                pipeline,
+                habitat_data,
+                poses,
+                segmenter=segmenter,
+                output_path=output_path,
+                rr_logger=rr_logger,
+                tsdf_planner=tsdf_planner,
+                sg_sim=sg_sim,
+                save_image=save_image,
+            )
         except Exception as e:
             click.secho(f"[warmup] non-fatal render error: {e}", fg="yellow")
 
@@ -146,6 +156,20 @@ def _get_num_steps(cfg) -> int:
             except Exception:
                 pass
     return 30
+
+
+class _StepBudget:
+    """One hard planning-call budget shared by every episode phase."""
+
+    def __init__(self, limit: int):
+        self.limit = max(0, int(limit))
+        self.used = 0
+
+    def take(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
 
 def _cfg_get(node, key: str, default):
     try:
@@ -303,12 +327,6 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
 
             sg_sim = SceneGraphSim(cfg, question_path, pipeline, rr_logger, device=device, clean_ques_ans=" ", enrich_object_labels=" ")
 
-            poses = habitat_data.get_init_poses_eqa(init_pts, init_pose_data[f"{scene}_{floor}"]["init_angle"], 0.0)
-            run(pipeline, habitat_data, poses, output_path=question_path, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, save_image=cfg.vlm.use_image, segmenter=segmenter)
-
-            _warmup_like_eqa(pipeline=pipeline, habitat_data=habitat_data, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, output_path=question_path, segmenter=segmenter, save_image=cfg.vlm.use_image, num_yaws=pre_answer_lookaround_yaws)
-            _ensure_scenegraph_initialized(pipeline=pipeline, habitat_data=habitat_data, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, output_path=question_path, segmenter=segmenter)
-
             anchor_label = q.get("anchor_label", None) or q.get("primary_object", None)
             anchor_center_hab = None
             try:
@@ -317,10 +335,12 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
             except Exception:
                 pass
 
-            # Initialize Multi-Agent Planner
-            # Set the SceneGraphSim's room naming inference provider to match the Orchestrator
-            sg_sim.enrich_provider = cfg.vlm.msp_nobnn.get("agent_providers", {}).get("orchestrator", "gemini")
-            
+            provider_cfg = _cfg_get(cfg.vlm.msp_nobnn, "agent_providers", {}) or {}
+            agent_providers = dict(provider_cfg) if hasattr(provider_cfg, "items") else {}
+            sg_sim.enrich_provider = agent_providers.get("orchestrator", "claude")
+
+            # Build the planner before scene-graph warmup. Room naming must use
+            # its accounted backend so every paid call reaches the governor.
             vlm_planner = MultiAgentMSPPlanner(
                 cfg.vlm,
                 sg_sim,
@@ -330,27 +350,43 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
                 anchor_center_hab=anchor_center_hab,
                 anchor_front_yaw_world=float(q["ann_yaw_rad"]) if q.get("ann_yaw_rad", None) not in [None, ""] else None,
                 choices=q.get("choices", []),
+                agent_providers=agent_providers,
+                pathfinder=habitat_data.pathfinder,
+                rr_logger=rr_logger,
+                on_llm_call=(cost_governor.charge_tracked if cost_governor is not None else None),
             )
             # MAPG-11: watch this episode's CallLog for spend accrual.
             if cost_governor is not None:
                 cost_governor.track(vlm_planner.call_log)
+
+            poses = habitat_data.get_init_poses_eqa(init_pts, init_pose_data[f"{scene}_{floor}"]["init_angle"], 0.0)
+            run(pipeline, habitat_data, poses, output_path=question_path, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, save_image=cfg.vlm.use_image, segmenter=segmenter)
+
+            _warmup_like_eqa(pipeline=pipeline, habitat_data=habitat_data, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, output_path=question_path, segmenter=segmenter, save_image=cfg.vlm.use_image, num_yaws=pre_answer_lookaround_yaws)
+            _ensure_scenegraph_initialized(pipeline=pipeline, habitat_data=habitat_data, rr_logger=rr_logger, tsdf_planner=tsdf_planner, sg_sim=sg_sim, output_path=question_path, segmenter=segmenter)
+            # Classify each room once, after warmup has populated the graph.
+            # This keeps labels informative without repeated paid relabeling.
+            sg_sim.classify_rooms_once(vlm_planner.infer_room_name)
 
             succ = False
             traj_length = 0.0
             final_pred = None
             ep_vlm_calls = 0
             ep_steps = 0
+            step_budget = _StepBudget(num_steps)
             ep_t0 = time.time()
             anchor_found = False
 
             # Warmup loop: keep searching until Grounding Agent confirms anchors
             for w in range(anchor_warmup_steps):
+                if not step_budget.take():
+                    break
                 agent_st = habitat_data._sim.get_agent(0).get_state()
                 target_pose, target_id, is_conf, conf, extra = vlm_planner.get_next_action(
                     agent_yaw_rad=float(habitat_data.get_heading_angle()),
                     agent_pos_hab=np.array(agent_st.position),
                 )
-                ep_steps += 1
+                ep_steps = step_budget.used
                 # MAPG-02: real per-episode call count from the planner's
                 # CallLog (1, 2, or 4 calls per step depending on path,
                 # retries included), not an assumed 4 per step.
@@ -388,12 +424,14 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
 
             # MAIN EPISODE LOOP
             for step in range(num_steps):
+                if not step_budget.take():
+                    break
                 agent_st = habitat_data._sim.get_agent(0).get_state()
                 target_pose, target_id, is_conf, conf, extra = vlm_planner.get_next_action(
                     agent_yaw_rad=float(habitat_data.get_heading_angle()),
                     agent_pos_hab=np.array(agent_st.position),
                 )
-                ep_steps += 1
+                ep_steps = step_budget.used
                 # MAPG-02: real cumulative call count, not step * 4.
                 ep_vlm_calls = vlm_planner.call_log.total()
                 # MAPG-11: price this step batch's new calls and stop
@@ -420,6 +458,8 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
                                 target_hab = None
 
                         if target_hab is not None:
+                            if not step_budget.take():
+                                break
                             ok, dlen = _nav_and_run_to_hab_target(pipeline, habitat_data, rr_logger, tsdf_planner, sg_sim, question_path, target_hab, segmenter, cfg.vlm.use_image)
                             if ok: traj_length += dlen
 
@@ -430,7 +470,7 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
                                 agent_yaw_rad=float(habitat_data.get_heading_angle()),
                                 agent_pos_hab=np.array(agent_st3.position),
                             )
-                            ep_steps += 1
+                            ep_steps = step_budget.used
                             # MAPG-02: real cumulative call count.
                             ep_vlm_calls = vlm_planner.call_log.total()
                             # MAPG-11: price the confirm batch too.
@@ -594,6 +634,7 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
         # what the paper gets written from.
         set_coverage(run_manifest, attempted, limit, uncovered_skipped)
         write_manifest(run_manifest, output_path)
+        results_store.update_run_manifest(run_id, run_manifest)
 
     except CostCapExceeded as exc:
         # MAPG-11: hard cost cap breach. Record the breach detail in
@@ -616,7 +657,7 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
             )
         except Exception:
             pass  # breach can hit before the first planner exists
-        results_store.start_run(run_manifest)  # refresh stored manifest
+        results_store.update_run_manifest(run_id, run_manifest)
         write_manifest(run_manifest, output_path)
         raise
 
@@ -637,7 +678,12 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, choices=["spatial", "grapheqa"], default=None, 
                         help="Which dataset format to load. Prompted interactively if left blank.")
     parser.add_argument("--skip", type=int, default=0, help="Number of queries to skip before starting.")
-    parser.add_argument("--max_steps", type=int, default=10, help="Limit number of steps per agent episode.")
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=10,
+        help="Hard limit on total planning calls per episode, including warmup and confirmation.",
+    )
     parser.add_argument("--limit", type=int, default=0,
                         help="Stop after this many ATTEMPTED episodes "
                              "(0 = no limit). Counts episodes actually "
@@ -645,6 +691,26 @@ if __name__ == "__main__":
                              "questions do not consume the budget. Use for "
                              "smoke runs: the cost cap is a backstop, not "
                              "a plan.")
+    parser.add_argument(
+        "--init-poses",
+        metavar="PATH",
+        help="runtime init-pose CSV override; does not modify the frozen cfg",
+    )
+    parser.add_argument(
+        "--output-path",
+        metavar="PATH",
+        help="runtime output path relative to src, for an isolated run directory",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=["claude", "openai", "gemini", "alibaba"],
+        help="provider used by all five agent roles",
+    )
+    parser.add_argument(
+        "--model-name",
+        metavar="MODEL",
+        help="concrete model id recorded in the run manifest",
+    )
     args = parser.parse_args()
     
     dataset = args.dataset
@@ -653,5 +719,16 @@ if __name__ == "__main__":
 
     cfg = OmegaConf.load(Path(__file__).resolve().parent.parent / "cfg" / f"{args.cfg_file}.yaml")
     OmegaConf.resolve(cfg)
+    if args.init_poses:
+        cfg.data.init_pose_data_path = args.init_poses
+    if args.output_path:
+        cfg.output_path = args.output_path
+    if args.provider:
+        cfg.vlm.msp_nobnn.agent_providers = {
+            role: args.provider
+            for role in ("orchestrator", "grounding", "spatial", "verifier", "qa")
+        }
+    if args.model_name:
+        cfg.vlm.name = args.model_name
     main(cfg, dataset_type=dataset, skip=args.skip, max_steps=args.max_steps,
          limit=args.limit)

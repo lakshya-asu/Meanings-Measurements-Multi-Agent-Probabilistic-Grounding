@@ -41,6 +41,7 @@ from src.msp.navmesh_density import (
 # MAPG-02: real per-call accounting. One CallLog per episode; the
 # runner's vlm_calls rollup is call_log.total(), retries included.
 from src.results.calls import CallLog, model_name_of
+from src.agents.base import text_part
 
 # MAPG-10: compact scene-graph serialization for prompt text (stable
 # prefix first, current agent pose only) and per-role model tiering.
@@ -54,6 +55,14 @@ from src.agents.serialization import (
 # stack (src/agents) needs no provider SDK at import time, while the
 # legacy per-backend classes pull in their SDKs at module scope.
 from src.multi_agent.blackboard import Blackboard
+
+ROOM_NAME_SCHEMA = {
+    "title": "RoomNameOutput",
+    "type": "object",
+    "properties": {"room": {"type": "string"}},
+    "required": ["room"],
+    "additionalProperties": False,
+}
 
 def _cfg_get(cfg: Any, path: str, default: Any) -> Any:
     """Read a possibly nested cfg value ('frames.gt_front') safely."""
@@ -81,6 +90,9 @@ class MultiAgentMSPPlanner:
         self.cfg = cfg
         self.sg_sim = sg_sim
         self.out_path = Path(out_path)
+        self.pathfinder = kwargs.get("pathfinder")
+        self.rr_logger = kwargs.get("rr_logger", getattr(sg_sim, "rr_logger", None))
+        self._on_llm_call = kwargs.get("on_llm_call")
         
         click.secho(f"\n{'='*40}\nINITIALIZING MULTI-AGENT PLANNER\n{'='*40}", fg="magenta", bold=True)
         click.secho(f"Question: {question}", fg="magenta")
@@ -316,6 +328,52 @@ class MultiAgentMSPPlanner:
         # ------------------------------------------------------------------
         self.call_log = CallLog()
 
+    def infer_room_name(self, object_names):
+        """Infer one room name through the accounted orchestrator backend.
+
+        A malformed paid response is retried once. Both attempts are logged,
+        charged immediately, and retain provider token usage.
+        """
+        names = sorted({str(name).strip().lower() for name in object_names if str(name).strip()})
+        if not names:
+            return "unknown_room"
+
+        system = (
+            "You label indoor rooms from their visible objects. Return JSON with "
+            "one lowercase string field named room."
+        )
+        user = "Visible objects: " + ", ".join(names)
+        room = "unknown_room"
+        for attempt in range(2):
+            def _send():
+                parsed, usage, _latency_ms = self.orchestrator.backend.send(
+                    system, [text_part(user)], ROOM_NAME_SCHEMA
+                )
+                return {"room": parsed.get("room", "unknown_room"), "usage": usage}
+
+            try:
+                result = self.call_log.call(
+                    "room_naming",
+                    _send,
+                    model_name=model_name_of(self.orchestrator),
+                    is_retry=bool(attempt),
+                    step_idx=0,
+                )
+                candidate = str(result.get("room", "unknown_room")).strip().lower()
+                if candidate:
+                    room = candidate
+                break
+            except Exception as exc:
+                suffix = "retrying once" if attempt == 0 else "using unknown_room"
+                click.secho(
+                    f"[room-name] accounted call failed: {exc}; {suffix}",
+                    fg="yellow",
+                )
+            finally:
+                if self._on_llm_call is not None:
+                    self._on_llm_call()
+        return room
+
     def _get_room_for_node(self, node_id: str) -> Optional[str]:
         """Traverse the Habitat scene graph hierarchy (Node -> Region -> Room)."""
         try:
@@ -412,7 +470,9 @@ class MultiAgentMSPPlanner:
         uses it (get_bounds + snap_point) to build the navmesh grid.
         """
         try:
-            pf = getattr(self.sg_sim, "pathfinder", None)
+            pf = self.pathfinder
+            if pf is None:
+                pf = getattr(self.sg_sim, "pathfinder", None)
             if pf is None:
                 sim = getattr(self.sg_sim, "sim", None)
                 pf = getattr(sim, "pathfinder", None) if sim is not None else None
@@ -564,12 +624,26 @@ class MultiAgentMSPPlanner:
             if extra.get("thought"):
                 click.secho(f"[DECISION] Thought: {extra.get('thought')}", fg="yellow")
             
+            simplified_transcript = None
+            if self.rr_logger is not None:
+                try:
+                    simplified_transcript = self.rr_logger.log_step_transcript(
+                        question=self.blackboard.question,
+                        step_num=step_num,
+                        agent_pose=agent_pos_hab.tolist(),
+                        ledger=self.blackboard.event_ledger,
+                        final_decision=extra,
+                    )
+                except Exception as exc:
+                    click.secho(f"[viewer] transcript logging failed: {exc}", fg="yellow")
+
             trace_dump = {
                 "t": step_num,
                 "agent_pose": agent_pos_hab.tolist(),
                 "agent_yaw": agent_yaw_rad,
                 "ledger": self.blackboard.event_ledger,
-                "final_decision": extra
+                "final_decision": extra,
+                "simplified_transcript": simplified_transcript,
             }
             _write_json(self.out_path / f"trace_step_{step_num:03d}.json", trace_dump)
             return target_pose, target_id, is_conf, conf, extra
