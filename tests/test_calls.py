@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.agents.base import Backend, BackendReplyError, text_part
 from src.results.calls import CallLog, extract_usage, model_name_of
 from src.results.manifest import build_manifest
 from src.results.store import ResultsStore
@@ -47,6 +48,19 @@ class FakeGeminiStyleAgent:
 class ExplodingAgent:
     def process(self, *args, **kwargs):
         raise RuntimeError("api down")
+
+
+class MalformedReplyBackend(Backend):
+    provider = "test"
+
+    def build_request(self, system, user_parts, schema=None):
+        return {"system": system, "user_parts": user_parts, "schema": schema}
+
+    def _transport(self, request):
+        return '{"room": "bedroom"}\ntrailing text', {
+            "prompt_tokens": 41,
+            "completion_tokens": 10,
+        }
 
 
 def anthropic_response(inp=1234, out=250):
@@ -188,6 +202,25 @@ def test_exception_is_recorded_and_reraised():
     assert rec.role == "spatial"
     assert rec.prompt_tokens is None and rec.completion_tokens is None
     assert rec.step_idx == 4
+
+
+def test_parse_exception_preserves_paid_provider_usage():
+    log = CallLog()
+    backend = MalformedReplyBackend("fake-model-1")
+    with pytest.raises(BackendReplyError, match="could not be parsed"):
+        log.call(
+            "room_naming",
+            backend.send,
+            "system",
+            [text_part("objects")],
+            {"type": "object"},
+            model_name=backend.model_name,
+            step_idx=0,
+        )
+
+    rec = log.records()[0]
+    assert rec.prompt_tokens == 41
+    assert rec.completion_tokens == 10
 
 
 def test_usage_captured_when_result_exposes_it():

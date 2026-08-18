@@ -21,6 +21,28 @@ from habitat_sim.utils.common import quat_to_coeffs, quat_from_angle_axis
 
 MISSING_ADE_LABELS = [29, 33]
 
+
+def _sanitize_instance_labels(instance_labels, label_count):
+    """Map simulator instance IDs without metadata to the unknown label.
+
+    Some HM3D semantic meshes emit sparse instance IDs beyond the object
+    metadata table. Hydra's LabelConverter indexes a dense array and raises
+    when it sees one of those IDs. Category 0 is the dataset's unknown label,
+    so remapping only out-of-range IDs preserves valid instances and keeps the
+    semantic observation usable.
+    """
+    labels = np.asarray(instance_labels)
+    if label_count is None:
+        return labels
+
+    invalid = (labels < 0) | (labels >= int(label_count))
+    if not np.any(invalid):
+        return labels
+
+    safe = labels.copy()
+    safe[invalid] = 0
+    return safe
+
 def _get_index(vertices, pos):
     distances = np.linalg.norm(vertices - np.squeeze(pos), axis=1)
     return np.argmin(distances)
@@ -252,6 +274,7 @@ class HabitatInterface:
         ])
 
         self._sim = habitat_sim.Simulator(config)
+        self._labelmap_size = None
         
         if cfg.scene_type=='mp3d':
             self._make_instance_labelmap_mp3d()
@@ -283,6 +306,7 @@ class HabitatInterface:
             [mpcat_to_ade[idx] for _, idx in object_to_cat_map.items()]
         )
         self._labelmap = hydra.LabelConverter(category_map)
+        self._labelmap_size = len(category_map)
         name_mapping = {}
         for c in self._sim.semantic_scene.categories:
             name_mapping[c.index()] = c.name()
@@ -297,6 +321,7 @@ class HabitatInterface:
 
             category_map = np.array(list(object_to_cat_map.values()))
             self._labelmap = hydra.LabelConverter(category_map) # instance idx to category idx
+            self._labelmap_size = len(category_map)
 
             name_mapping = {}
             for c in self._sim.semantic_scene.categories:
@@ -307,6 +332,7 @@ class HabitatInterface:
             self._colormap = hydra.SegmentationColormap.from_names(names=names)
         else:
             self._labelmap = None
+            self._labelmap_size = None
             self._colormap = None
 
     def _make_navgraph(self, inflation_radius=0.1, threshold=1.0e-3):
@@ -574,6 +600,9 @@ class HabitatInterface:
 
         if self._labels is None:
             instance_labels = self._obs[str(habitat_sim.SensorType.SEMANTIC)]
+            instance_labels = _sanitize_instance_labels(
+                instance_labels, self._labelmap_size
+            )
             self._labels = self._labelmap(instance_labels).astype(np.int32)
 
         return self._labels

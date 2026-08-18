@@ -4,6 +4,8 @@ Pure logic only. No habitat, no real dataset, no network.
 """
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,10 +13,12 @@ import pytest
 from src.paths import REPO_ROOT, data_root, resolve_data_path
 from src.scripts.preflight import (
     backends_for,
+    bare_backend_price_gap,
     collect_aliases,
     missing_env_backends,
     parse_env_file,
     pinned_aliases_needed,
+    probe_import,
     selected_aliases,
     unpinned_aliases,
 )
@@ -237,6 +241,40 @@ class TestSelectedAliases:
         assert selected_aliases({"vlm": {"name": "msp_point"}}) == set()
 
 
+# ---------------------------------------------------------------------------
+# bare_backend_price_gap: the false green that used to report PASS
+# ---------------------------------------------------------------------------
+
+class TestBareBackendPriceGap:
+    def test_bare_backend_alone_cannot_be_price_checked(self):
+        # The regression. A bare selector names no concrete model, so
+        # nothing can be priced, and check (h) previously said PASS
+        # while verifying nothing at all.
+        gap = bare_backend_price_gap({"gemini"})
+        assert gap is not None
+        assert "gemini" in gap
+        assert "no concrete model" in gap
+
+    def test_concrete_model_has_no_gap(self):
+        assert bare_backend_price_gap({"claude-opus-4-6"}) is None
+
+    def test_bare_plus_concrete_has_no_gap(self):
+        # One concrete model is enough to make the price check
+        # meaningful, so a bare name alongside it is not a gap.
+        assert bare_backend_price_gap({"claude", "claude-opus-4-6"}) is None
+
+    def test_no_backends_at_all_is_not_a_gap(self):
+        # Nothing selected means the governor is not required; that is
+        # a different condition and must not be reported as this one.
+        assert bare_backend_price_gap(set()) is None
+        assert bare_backend_price_gap({"msp_point"}) is None
+
+    def test_gap_names_the_provider_not_the_alias(self):
+        # The message has to say which cap key is unverifiable, since
+        # that is what the reader has to go fix.
+        assert "openai" in bare_backend_price_gap({"gpt"})
+
+
 class TestEnvBackends:
     def test_backend_mapping(self):
         assert backends_for({"claude-opus-4-6"}) == {"claude"}
@@ -264,3 +302,19 @@ class TestEnvBackends:
         env = {"DASHSCOPE_API_KEY": "   "}
         missing = missing_env_backends({"qwen3-vl-plus"}, env)
         assert [b for b, _ in missing] == ["qwen"]
+
+
+def test_probe_import_uses_isolated_interpreter(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert probe_import("habitat_sim") == (True, "")
+    assert seen["cmd"][0] == sys.executable
+    assert seen["cmd"][1] == "-c"
+    assert "habitat_sim" in seen["cmd"][2]
+    assert seen["kwargs"]["check"] is False

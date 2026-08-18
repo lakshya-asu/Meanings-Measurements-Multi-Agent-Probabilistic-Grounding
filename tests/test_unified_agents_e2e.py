@@ -38,6 +38,7 @@ for _name in ("google", "google.generativeai", "quaternion"):
 os.environ.setdefault("GOOGLE_API_KEY", "test-not-a-real-key")
 
 from src.planners.multi_agent_msp_planner import MultiAgentMSPPlanner  # noqa: E402
+from src.agents.base import BackendReplyError  # noqa: E402
 from tests.fake_backend import FakeBackend  # noqa: E402
 from tests.golden.context import (  # noqa: E402
     AGENT_STATE,
@@ -50,6 +51,7 @@ from tests.golden.context import (  # noqa: E402
 )
 
 RESPONSES = {
+    "RoomNameOutput": {"room": "living room"},
     "OrchestratorOutput": {
         "reasoning": "Point 3.0 meters along the tv front.",
         "target_entity": "location",
@@ -110,7 +112,7 @@ class _TestPlanner(MultiAgentMSPPlanner):
         return objects, frontiers
 
 
-def _make_planner(tmp_path, question, choices=()):
+def _make_planner(tmp_path, question, choices=(), **kwargs):
     (tmp_path / "current_img_0.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
     cfg = SimpleNamespace(
         agents_impl="unified",
@@ -127,6 +129,7 @@ def _make_planner(tmp_path, question, choices=()):
         question,
         out_path=str(tmp_path),
         choices=list(choices),
+        **kwargs,
     )
     fake = FakeBackend(RESPONSES)
     for role_obj in (
@@ -138,6 +141,63 @@ def _make_planner(tmp_path, question, choices=()):
     ):
         role_obj.backend = fake
     return planner, fake
+
+
+def test_injected_pathfinder_reaches_masking_and_verifier(tmp_path):
+    pathfinder = object()
+    planner, _ = _make_planner(tmp_path, QUESTION_WHERE, pathfinder=pathfinder)
+    assert planner._get_pathfinder() is pathfinder
+
+
+def test_room_name_call_is_accounted_and_charged(tmp_path):
+    charged = []
+    planner, fake = _make_planner(
+        tmp_path, QUESTION_WHERE, on_llm_call=lambda: charged.append(True)
+    )
+    assert planner.infer_room_name(["sofa", "television"]) == "living room"
+    row = planner.call_log.rows()[0]
+    assert row["role"] == "room_naming"
+    assert row["prompt_tokens"] == 111
+    assert row["completion_tokens"] == 22
+    assert charged == [True]
+    assert fake.sent[-1][2]["title"] == "RoomNameOutput"
+
+
+def test_room_name_parse_failure_retries_once_with_exact_usage(tmp_path):
+    class MalformedOnceBackend:
+        model_name = "fake-model-1"
+
+        def __init__(self):
+            self.attempts = 0
+
+        def send(self, _system, _parts, _schema):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise BackendReplyError(
+                    "malformed room JSON",
+                    usage={"prompt_tokens": 41, "completion_tokens": 10},
+                )
+            return (
+                {"room": "bedroom"},
+                {"prompt_tokens": 43, "completion_tokens": 9},
+                1.0,
+            )
+
+    charged = []
+    planner, _ = _make_planner(
+        tmp_path, QUESTION_WHERE, on_llm_call=lambda: charged.append(True)
+    )
+    backend = MalformedOnceBackend()
+    planner.orchestrator.backend = backend
+
+    assert planner.infer_room_name(["bed"]) == "bedroom"
+    rows = planner.call_log.rows()
+    assert [(row["prompt_tokens"], row["completion_tokens"]) for row in rows] == [
+        (41, 10),
+        (43, 9),
+    ]
+    assert [row["is_retry"] for row in rows] == [False, True]
+    assert charged == [True, True]
 
 
 def test_planner_defaults_to_unified_stack(tmp_path):

@@ -210,6 +210,20 @@ def test_runs_and_status_lifecycle(tmp_path):
     store.close()
 
 
+def test_update_run_manifest_preserves_status(tmp_path):
+    store = ResultsStore(tmp_path / "results.sqlite")
+    manifest = make_manifest()
+    run_id = store.start_run(manifest)
+    store.finish_run(run_id, "complete")
+
+    manifest["coverage"] = {"episodes_attempted": 98, "partial": False}
+    store.update_run_manifest(run_id, manifest)
+
+    assert store.run_status(run_id) == "complete"
+    assert store.runs()[0]["manifest"]["coverage"]["episodes_attempted"] == 98
+    store.close()
+
+
 def test_git_hard_fail_when_git_missing(tmp_path, monkeypatch):
     # An empty PATH means subprocess cannot find git: must raise, not
     # silently continue like the old wandb path did.

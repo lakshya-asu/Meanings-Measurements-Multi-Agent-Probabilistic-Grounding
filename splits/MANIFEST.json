@@ -22,6 +22,15 @@
       "date": "2026-08-15",
       "frozen": false,
       "note": "lenient-cascade synonym table; freeze at benchmark release"
+    },
+    "scene_init_poses_v2": {
+      "name": "scene_init_poses_v2",
+      "path": "datasets/explore-eqa/scene_init_poses_semantic_only_v2.csv",
+      "sha256": "8c552006a2d62bb4d33fc55abf01cd67e07805d6e7094a64e4f02e189e6a967a",
+      "rows": 64,
+      "date": "2026-08-17",
+      "frozen": true,
+      "note": "v1 49 poses plus 15 human-approved candidates via finalize --approved; original scene_init_poses file untouched per finalize's instruction"
     }
   }
 }

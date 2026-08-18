@@ -155,10 +155,67 @@ def build_manifest(cfg: Any, seed: int, split_name: str) -> Dict[str, Any]:
         "in_container": os.path.exists("/.dockerenv"),
         "hostname": socket.gethostname(),
         "start_time_utc": started.isoformat(),
+        # Renderer provenance. This container is CUDA-capable but
+        # render-incapable: gpu_device_id 0 raises "unable to find CUDA
+        # device 0 among 1 EGL devices" and only software mesa works.
+        # The v1 98-query numbers predate the move to WSL and were very
+        # likely produced on a real GPU renderer, so which renderer
+        # drew the pixels is a scientific fact about the run, not an
+        # ops detail: the VLM arms consume those pixels. Recorded on
+        # every run so a renderer confound is detectable later instead
+        # of being argued about from memory.
+        "renderer": renderer_info(cfg),
         **git,
     }
     if warnings:
         manifest["warnings"] = warnings
+    return manifest
+
+
+def renderer_info(cfg: Any) -> Dict[str, Any]:
+    """Which renderer this run will use, and the GL string if available.
+
+    Never raises and never constructs a simulator: this runs at manifest
+    build time, before the run, and must not be able to break it.
+    """
+    plain = _to_plain(cfg)
+    gpu = None
+    if isinstance(plain, dict):
+        hab = plain.get("habitat")
+        if isinstance(hab, dict):
+            gpu = hab.get("sim_gpu")
+        if gpu is None:
+            gpu = plain.get("sim_gpu")
+    try:
+        gpu_int = int(gpu) if gpu is not None else None
+    except (TypeError, ValueError):
+        gpu_int = None
+
+    info: Dict[str, Any] = {
+        "sim_gpu": gpu_int,
+        "mode": "software" if gpu_int is not None and gpu_int < 0 else "gpu",
+        "gl_renderer": os.environ.get("MAPG_GL_RENDERER"),
+    }
+    return info
+
+
+def set_coverage(manifest: Dict[str, Any], attempted: int, limit: int,
+                 uncovered_skipped) -> Dict[str, Any]:
+    """Record what the run actually covered (janus condition c6).
+
+    Console output is not evidence. The paper gets written from
+    manifests months later, so a partial run has to be self-describing
+    from its artifacts. Call this on every exit path, including the
+    cost-cap breach path, where the console coverage line never prints.
+    """
+    missing = sorted({str(p) for p in (uncovered_skipped or [])})
+    manifest["coverage"] = {
+        "episodes_attempted": int(attempted),
+        "limit": int(limit or 0),
+        "skipped_no_init_pose": len(uncovered_skipped or []),
+        "skipped_scene_floors": missing,
+        "partial": bool(missing) or bool(limit),
+    }
     return manifest
 
 

@@ -8,34 +8,6 @@ import imageio, cv2
 from PIL import Image
 import rerun as rr
 
-from enum import Enum
-from pydantic import BaseModel
-from openai import OpenAI
-
-client = OpenAI()
-
-class Rooms(str, Enum):
-    bedroom = "bedroom"
-    bathroom = "bathroom"
-    living_room = "living room"
-    kitchen = "kitchen"
-    lobby = "lobby"
-    dining_room = "dining room"
-    patio = "patio"
-    closet = "closet"
-    study = "study room"
-    staircase = "staircase"
-    porch = "porch"
-    laboratory = "laboratory"
-    office = "office"
-    workshop = "workshop"
-    garage = "garage"
-
-class Room_response(BaseModel):
-    explanation: str
-    room: Rooms
-
-
 def _safe_bbox_extents_center(bbox):
     """MAPG-01: (extents, center) of a Hydra AABB, both rounded to 2 dp
     (centimeter precision, keeps the LLM-visible serialization compact),
@@ -57,12 +29,16 @@ def _safe_bbox_extents_center(bbox):
         return None, None
 
 class SceneGraphSim:
-    def __init__(self, cfg, output_path, pipeline, rr_logger=None, device='cpu', clean_ques_ans=' ', enrich_object_labels=None, enrich_provider: str = 'qwen'):
+    def __init__(self, cfg, output_path, pipeline, rr_logger=None, device='cpu', clean_ques_ans=' ', enrich_object_labels=None, enrich_provider: str = 'qwen', room_name_infer_fn=None):
         self.sg_cfg = cfg.scene_graph_sim
         self.device = device
         self.enrich_rooms = self.sg_cfg.enrich_rooms
         self.enrich_object_labels = enrich_object_labels
         self.enrich_provider = enrich_provider
+        self.room_name_infer_fn = room_name_infer_fn
+        self._room_name_cache = {}
+        self._room_id_name_cache = {}
+        self._room_name_warning_emitted = False
 
         self.save_image = self.sg_cfg.save_image
         self.include_regions = self.sg_cfg.include_regions
@@ -317,42 +293,66 @@ class SceneGraphSim:
                             self.rr_logger.log_hydra_graph(is_node=False, edge_type=edge_type, edgeid=edgeid, node_pos_source=frontier_nodes[i], node_pos_target=obj_pos)
 
     def _infer_room_name(self, object_names):
-        try:
-            import os, json
-            import anthropic
-            client_claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
-            
-            sys_prompt = "You are a spatial reasoning AI. Output JSON containing a single key 'room' with the most likely room name in lowercase."
-            prompt = f"Given the list of objects: {object_names}. Which room are these objects most likely found in? Keep explanation very brief."
-            
-            response = client_claude.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=256,
-                system=sys_prompt,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = response.content[0].text
-            
-            import re
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(0))
-                return parsed.get("room", "unknown_room")
+        names = tuple(sorted({str(name).strip().lower() for name in object_names if str(name).strip()}))
+        if not names:
             return "unknown_room"
-        except Exception as e:
-            print(f"Room Name Generation failed (claude-opus-4-6): {e}")
+        if names in self._room_name_cache:
+            return self._room_name_cache[names]
+        if self.room_name_infer_fn is None:
+            if not self._room_name_warning_emitted:
+                print("Room naming skipped: no accounted inference callback was injected.")
+                self._room_name_warning_emitted = True
             return "unknown_room"
+
+        room = str(self.room_name_infer_fn(names)).strip().lower() or "unknown_room"
+        self._room_name_cache[names] = room
+        return room
+
+    def _infer_room_name_for_id(self, room_id, object_names):
+        """Classify each stable room node once per episode."""
+        key = str(room_id)
+        if self.room_name_infer_fn is None:
+            return "unknown_room"
+        if key not in self._room_id_name_cache:
+            self._room_id_name_cache[key] = self._infer_room_name(object_names)
+        return self._room_id_name_cache[key]
+
+    def _get_room_object_ids(self, room_id):
+        """Return object children for graphs with or without region nodes."""
+        object_ids = []
+        known_object_ids = set(self._object_node_ids)
+        direct_ids = list(self.filtered_netx_graph.successors(room_id))
+
+        for node_id in direct_ids:
+            node_key = str(node_id)
+            if node_id in known_object_ids or node_key.startswith("object_"):
+                object_ids.append(node_id)
+                continue
+            if node_key.startswith(("room_", "agent_", "frontier_")):
+                continue
+            for child_id in self.filtered_netx_graph.successors(node_id):
+                child_key = str(child_id)
+                if child_id in known_object_ids or child_key.startswith("object_"):
+                    object_ids.append(child_id)
+
+        return list(dict.fromkeys(object_ids))
+
+    def classify_rooms_once(self, room_name_infer_fn):
+        """Enable accounted inference after warmup and classify populated rooms."""
+        self.room_name_infer_fn = room_name_infer_fn
+        self._room_name_cache.clear()
+        self._room_id_name_cache.clear()
+        self.add_room_labels_to_sg()
 
     def add_room_labels_to_sg(self):
         self._room_names = []
         if len(self._room_ids)>0:
             for room_id in self._room_ids:
-                place_ids = [place_id for place_id in self.filtered_netx_graph.successors(room_id) if 'room' not in place_id] # ignore room->room
-                object_ids = [object_id for place_id in place_ids for object_id in self.filtered_netx_graph.successors(place_id) if 'agent' not in object_id] # ignore place->agent
+                object_ids = self._get_room_object_ids(room_id)
                 object_names = np.unique([self.filtered_netx_graph.nodes[object_id]['name'] for object_id in object_ids])
                 
                 start = time.time()
-                room_val = self._infer_room_name(object_names)
+                room_val = self._infer_room_name_for_id(room_id, object_names)
                 print(f" ======== time for room {room_id} enrichment: {time.time()-start}")
                 self.filtered_netx_graph.nodes[room_id]['name'] = room_val
                 self._room_names.append(room_val)
@@ -361,7 +361,7 @@ class SceneGraphSim:
             self._room_ids = ['room_0']
             object_names = np.unique([self.filtered_netx_graph.nodes[object_id]['name'] for object_id in self._object_node_ids])
             start = time.time()
-            room_val = self._infer_room_name(object_names)
+            room_val = self._infer_room_name_for_id("room_0", object_names)
             print(f" ======== time for room enrichment: {time.time()-start}")
 
             # Add node to graph

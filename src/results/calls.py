@@ -260,13 +260,23 @@ class CallLog:
         t0 = time.perf_counter()
         try:
             result = fn(*args, **kwargs)
-        except Exception:
+        except Exception as exc:
+            # A transport may have completed and exposed provider usage
+            # before response parsing failed. BackendReplyError keeps that
+            # usage on the exception so the paid call remains exact rather
+            # than falling back to an estimate in the cost governor.
+            prompt_tokens, completion_tokens = extract_usage(exc)
+            cache_read_tokens, cache_write_tokens = extract_cache_usage(exc)
             self.record(
                 role,
                 model_name=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 is_retry=is_retry,
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
                 step_idx=step_idx,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             )
             raise
         latency_ms = (time.perf_counter() - t0) * 1000.0
