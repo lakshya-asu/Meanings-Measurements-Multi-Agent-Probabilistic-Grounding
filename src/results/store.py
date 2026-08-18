@@ -57,6 +57,21 @@ CREATE TABLE IF NOT EXISTS episodes (
     created_at       TEXT NOT NULL,
     PRIMARY KEY (run_id, qid)
 );
+
+CREATE TABLE IF NOT EXISTS calls (
+    run_id            TEXT NOT NULL,
+    qid               TEXT NOT NULL,
+    call_idx          INTEGER NOT NULL,
+    step_idx          INTEGER,
+    role              TEXT,
+    model_name        TEXT,
+    prompt_tokens     INTEGER,
+    completion_tokens INTEGER,
+    is_retry          INTEGER,
+    latency_ms        REAL,
+    created_at        TEXT NOT NULL,
+    PRIMARY KEY (run_id, qid, call_idx)
+);
 """
 
 
@@ -253,6 +268,79 @@ class ResultsStore:
             d["final"] = json.loads(d["final"])
             out.append(d)
         return out
+
+    # ------------------------------------------------------------------
+    # Per-call rows (MAPG-02)
+    # ------------------------------------------------------------------
+    def record_calls(self, run_id: str, qid: str, calls: Any) -> None:
+        """Replace the per-call LLM rows for one episode.
+
+        ``calls`` is an iterable of dicts (CallLog.rows()) or objects
+        with the CallRecord fields; call_idx is assigned from
+        iteration order. Keyed (run_id, qid, call_idx): re-recording
+        an episode replaces its rows, matching record_episode.
+
+        Raises RuntimeError if the run_id was never registered with
+        start_run, same contract as record_episode.
+        """
+        if self.run_status(run_id) is None:
+            raise RuntimeError(
+                f"run_id {run_id!r} was never registered. Call "
+                "store.start_run(manifest) before recording calls; a run "
+                "without a manifest is not a valid result."
+            )
+        if not qid:
+            raise ValueError("record_calls needs a non-empty qid")
+
+        def _get(rec: Any, key: str) -> Any:
+            if isinstance(rec, dict):
+                return rec.get(key)
+            return getattr(rec, key, None)
+
+        now = _now()
+        rows = []
+        for idx, rec in enumerate(calls):
+            is_retry = _get(rec, "is_retry")
+            rows.append(
+                (
+                    str(run_id),
+                    str(qid),
+                    idx,
+                    _as_int(_get(rec, "step_idx")),
+                    _get(rec, "role"),
+                    _get(rec, "model_name"),
+                    _as_int(_get(rec, "prompt_tokens")),
+                    _as_int(_get(rec, "completion_tokens")),
+                    None if is_retry is None else (1 if bool(is_retry) else 0),
+                    _as_real(_get(rec, "latency_ms")),
+                    now,
+                )
+            )
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM calls WHERE run_id=? AND qid=?", (str(run_id), str(qid))
+            )
+            if rows:
+                self._conn.executemany(
+                    "INSERT INTO calls (run_id, qid, call_idx, step_idx, role, "
+                    "model_name, prompt_tokens, completion_tokens, is_retry, "
+                    "latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+
+    def calls(self, run_id: str, qid: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Per-call rows for a run (optionally one episode), in order."""
+        if qid is None:
+            cur = self._conn.execute(
+                "SELECT * FROM calls WHERE run_id=? ORDER BY qid, call_idx",
+                (run_id,),
+            )
+        else:
+            cur = self._conn.execute(
+                "SELECT * FROM calls WHERE run_id=? AND qid=? ORDER BY call_idx",
+                (run_id, str(qid)),
+            )
+        return [dict(r) for r in cur.fetchall()]
 
     def close(self) -> None:
         self._conn.close()

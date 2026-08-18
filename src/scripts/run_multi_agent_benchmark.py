@@ -301,7 +301,10 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                     agent_pos_hab=np.array(agent_st.position),
                 )
                 ep_steps += 1
-                ep_vlm_calls += 4 # 4 Agents run per step
+                # MAPG-02: real per-episode call count from the planner's
+                # CallLog (1, 2, or 4 calls per step depending on path,
+                # retries included), not an assumed 4 per step.
+                ep_vlm_calls = vlm_planner.call_log.total()
 
                 action_type = extra.get("action_type", "goto_frontier")
                 
@@ -337,7 +340,8 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                     agent_pos_hab=np.array(agent_st.position),
                 )
                 ep_steps += 1
-                ep_vlm_calls += 4
+                # MAPG-02: real cumulative call count, not step * 4.
+                ep_vlm_calls = vlm_planner.call_log.total()
 
                 action_type = extra.get("action_type", "goto_frontier")
                 chosen_id = str(extra.get("chosen_id", "")).strip()
@@ -369,7 +373,8 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                                 agent_pos_hab=np.array(agent_st3.position),
                             )
                             ep_steps += 1
-                            ep_vlm_calls += 4
+                            # MAPG-02: real cumulative call count.
+                            ep_vlm_calls = vlm_planner.call_log.total()
 
                             if extra2.get("action_type") == "answer":
                                 extra = extra2
@@ -415,6 +420,11 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
             ep_time = time.time() - ep_t0
             final_conf = float(final_pred.get("confidence", 0.0)) if isinstance(final_pred, dict) else 0.0
 
+            # MAPG-02: episode rollup straight from the CallLog (column
+            # name stays vlm_calls); retry calls reported separately.
+            ep_vlm_calls = vlm_planner.call_log.total()
+            ep_vlm_retry_calls = vlm_planner.call_log.retries()
+
             per_episode_metrics.append({
                 "question_index": question_ind,
                 "experiment_id": experiment_id,
@@ -426,6 +436,7 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
                 "success": bool(succ),
                 "num_steps": int(ep_steps),
                 "vlm_calls": int(ep_vlm_calls),
+                "vlm_retry_calls": int(ep_vlm_retry_calls),
                 "traj_length": float(traj_length),
                 "episode_time_sec": float(ep_time),
                 "final_confidence": float(final_conf),
@@ -459,6 +470,10 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25)
             # could not be computed.
             store_row.update(decompose_episode(norm_pred, q))
             results_store.record_episode(run_id, store_row)
+            # MAPG-02: per-call rows (role, model, tokens when exposed,
+            # retry flag, latency) into the calls table, keyed
+            # (run_id, qid, call_idx).
+            results_store.record_calls(run_id, experiment_id, vlm_planner.call_log.rows())
 
             total_traj_length += traj_length
             if succ: total_success += 1

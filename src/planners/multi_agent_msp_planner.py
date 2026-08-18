@@ -7,8 +7,40 @@ from typing import Optional, Dict, Any
 from src.utils.data_utils import get_latest_image
 from src.schema.prediction import normalize_prediction
 
-# Import your existing MSP Engine
-from src.planners.vlm_planner_msp_debug import MSPEngineSmart, _parse_q_dist
+# Import the MSP Engine (numeric-conditioning aware subclass of MSPEngineSmart)
+from src.planners.msp_engine_numeric import NumericConditioningEngine, gt_front_theta
+
+# MAPG-01: kernel bandwidths from real Hydra AABB extents (pure helpers,
+# host-importable; formulas documented in the module docstring)
+from src.msp.kernel_bandwidths import (
+    FIXED_SIZE_M,
+    resolve_mode as resolve_bandwidth_mode,
+    resolve_object_size_hab,
+    bandwidth_size_hab,
+)
+
+# P0 fix 1: single deterministic source for d0 (no silent 1.0 m default)
+from src.parsing.metric_literal import (
+    parse_metric_literal,
+    infer_relation,
+    resolve_categorical_distance,
+)
+
+# P0 fix 3: programmatic verifier checks
+from src.verification.checks import run_checks, failed_reasons
+
+# MAPG-12: navmesh masking + renormalization of the composed density
+# (pure numpy; the pathfinder is injected, no habitat import here)
+from src.msp.navmesh_density import (
+    DEFAULT_CELL_SIZE_M,
+    DEFAULT_TAU_M,
+    apply_density_masking,
+    resolve_masking_mode,
+)
+
+# MAPG-02: real per-call accounting. One CallLog per episode; the
+# runner's vlm_calls rollup is call_log.total(), retries included.
+from src.results.calls import CallLog, model_name_of
 
 # Import the new Multi-Agent components
 from src.multi_agent.blackboard import Blackboard
@@ -19,6 +51,19 @@ from src.multi_agent.agents.verifier_agent import VerifierAgent
 from src.multi_agent.agents.logical_agent import LogicalAgent
 from src.multi_agent.agents.qa_agent import QaAgent
 from src.multi_agent.agent_setup import AgentFactory
+
+def _cfg_get(cfg: Any, path: str, default: Any) -> Any:
+    """Read a possibly nested cfg value ('frames.gt_front') safely."""
+    node = cfg
+    for part in path.split("."):
+        if node is None:
+            return default
+        if isinstance(node, dict):
+            node = node.get(part, None)
+        else:
+            node = getattr(node, part, None)
+    return default if node is None else node
+
 
 def _write_json(path: Path, obj: Any) -> None:
     try:
@@ -62,18 +107,131 @@ class MultiAgentMSPPlanner:
         if "choices" in kwargs:
             self.blackboard.choices = kwargs["choices"]
         
-        # Keep your existing robust math engine
-        self.msp_engine = MSPEngineSmart(
+        # Keep your existing robust math engine (numeric-conditioning aware:
+        # question_dist may be None, in which case the metric kernel is
+        # omitted from the composition instead of defaulting to 1.0 m).
+        self.msp_engine = NumericConditioningEngine(
             sigma_s_factor=float(getattr(self.cfg, "sigma_s_factor", 0.5)),
             sigma_m_factor=float(getattr(self.cfg, "sigma_m_factor", 0.3)),
             kappa_factor=float(getattr(self.cfg, "kappa_factor", 10.0)),
         )
-        
+
         # New configurable top_k parameter for returning best objects
         self.top_k = int(getattr(self.cfg, "top_k_objects", 2))
-        
+
+        # ------------------------------------------------------------------
+        # MAPG-01: kernel bandwidths. cfg ``kernel_bandwidths`` is
+        # "from_bbox" (default) or "fixed" (ablation arm, preserves the
+        # historical hardcoded 0.5 m cube). Under from_bbox each
+        # candidate's size comes from its Hydra AABB, and the engine is
+        # handed an isotropic cube built from the anchor's max
+        # horizontal extent s, so sigma_s = sigma_s_factor * s
+        # (default 0.5 * s). Full formula set and frame conventions:
+        # src.msp.kernel_bandwidths.py. A node without a valid box
+        # falls back to the fixed cube with a recorded reason.
+        # ------------------------------------------------------------------
+        self.kernel_bandwidths, _kb_warn = resolve_bandwidth_mode(
+            _cfg_get(self.cfg, "kernel_bandwidths", None)
+        )
+        if _kb_warn:
+            click.secho(f"[MSP] {_kb_warn}", fg="yellow")
+        click.secho(f"[MSP] kernel_bandwidths={self.kernel_bandwidths}", fg="cyan")
+        # Per-candidate size provenance: {id: (source, reason)}.
+        self._size_provenance = {}
+
+        # ------------------------------------------------------------------
+        # MAPG-12: navmesh masking + renormalization. cfg ``density_masking``
+        # is "navmesh" (default: point estimation is the argmax navigable
+        # cell of the masked, renormalized density) or "off" (ablation arm:
+        # the pre-MAPG-12 unmasked estimator, bit-identical). When no
+        # pathfinder is reachable through sg_sim the step falls back to off
+        # with the reason recorded in pdf_params. The grid geometry is
+        # navmesh-only, so it is built once and reused across steps.
+        # ------------------------------------------------------------------
+        self.density_masking, _dm_warn = resolve_masking_mode(
+            _cfg_get(self.cfg, "density_masking", None)
+        )
+        if _dm_warn:
+            click.secho(f"[MSP] {_dm_warn}", fg="yellow")
+        self.navmesh_grid_m = float(
+            _cfg_get(self.cfg, "navmesh_grid_m", DEFAULT_CELL_SIZE_M)
+        )
+        click.secho(
+            f"[MSP] density_masking={self.density_masking} "
+            f"navmesh_grid_m={self.navmesh_grid_m}",
+            fg="cyan",
+        )
+        self._navmesh_grid = None
+
         # Persistent context
         self.locked_anchor_id = None
+
+        # ------------------------------------------------------------------
+        # P0 fix 1: d0 single source. Parse the metric literal ONCE per
+        # episode with the deterministic parser. No default: value_m is
+        # None when the utterance has no distance, and the metric kernel
+        # is then omitted from the composition.
+        # ------------------------------------------------------------------
+        self.numeric_conditioning = str(
+            _cfg_get(self.cfg, "numeric_conditioning", "on")
+        ).lower().strip()
+        if self.numeric_conditioning not in ("on", "off", "categorical_only"):
+            click.secho(
+                f"[MSP] Unknown numeric_conditioning={self.numeric_conditioning!r}; using 'on'.",
+                fg="yellow",
+            )
+            self.numeric_conditioning = "on"
+        self.metric_parse = parse_metric_literal(question)
+        self.metric_schema_warnings = []
+        click.secho(
+            f"[MSP] Metric literal parse: value_m={self.metric_parse.value_m} "
+            f"unit={self.metric_parse.unit} raw={self.metric_parse.raw!r} "
+            f"warnings={self.metric_parse.warnings} "
+            f"(numeric_conditioning={self.numeric_conditioning})",
+            fg="cyan",
+        )
+
+        # ------------------------------------------------------------------
+        # P0 fix 2: ann_yaw_rad plumbing. The runner passes the bench
+        # annotation as anchor_front_yaw_world; it used to die in **kwargs.
+        # It is GT, so its USE is gated behind cfg frames.gt_front (default
+        # false, oracle-frames ablation only); by default it is only
+        # recorded, never consumed.
+        # ------------------------------------------------------------------
+        _raw_yaw = kwargs.get("anchor_front_yaw_world", None)
+        self.gt_anchor_front_yaw = float(_raw_yaw) if _raw_yaw is not None else None
+        self.gt_front_available = self.gt_anchor_front_yaw is not None
+        self.use_gt_front = bool(_cfg_get(self.cfg, "frames.gt_front", False))
+        click.secho(
+            f"[MSP] GT anchor front yaw: available={self.gt_front_available} "
+            f"value={self.gt_anchor_front_yaw} frames.gt_front={self.use_gt_front}",
+            fg="cyan",
+        )
+
+        # ------------------------------------------------------------------
+        # P0 fix 3: verifier. LLM critique is optional (cfg verifier.llm,
+        # default off per the ablation design); programmatic checks gate
+        # every step. Verifier rejections retry via the existing
+        # exploration path, capped at 2 retries per episode segment
+        # (fairness rules); after the cap the failure is recorded and the
+        # step proceeds instead of livelocking.
+        # ------------------------------------------------------------------
+        self.verifier_llm_enabled = bool(_cfg_get(self.cfg, "verifier.llm", False))
+        try:
+            self.verifier.llm_enabled = self.verifier_llm_enabled
+        except Exception:
+            pass
+        self.verifier_rejections = 0
+        self.max_verifier_retries = 2
+
+        # ------------------------------------------------------------------
+        # MAPG-02: per-call LLM accounting. Every agent invocation below
+        # is wrapped with this log; the runner reads call_log.total()
+        # for the episode vlm_calls rollup instead of assuming 4 calls
+        # per step. Token counts are None until MAPG-09 makes the agent
+        # classes return provider usage (they currently drop it).
+        # ------------------------------------------------------------------
+        self.call_log = CallLog()
 
     def _get_room_for_node(self, node_id: str) -> Optional[str]:
         """Traverse the Habitat scene graph hierarchy (Node -> Region -> Room)."""
@@ -95,20 +253,161 @@ class MultiAgentMSPPlanner:
             pass
         return None
 
+    def _resolve_d0(self, orch_out: Dict[str, Any]):
+        """Resolve d0 for this step. Returns (d0_m or None, provenance dict).
+
+        d0 comes ONLY from the deterministic parser (parsed once per
+        episode in __init__). The orchestrator's structured metric field,
+        previously extracted and then discarded, is now consumed as a
+        cross-check: if it is present and numeric it must agree with the
+        deterministic parse; on disagreement a schema_warning is logged
+        and the deterministic parse wins.
+        """
+        relation = ""
+        orch_metric_raw = ""
+        if isinstance(orch_out, dict):
+            relation = str(orch_out.get("composition_logic", "") or "")
+            for a in orch_out.get("anchors", []) or []:
+                if isinstance(a, dict) and str(a.get("metric", "") or "").strip():
+                    orch_metric_raw = str(a["metric"]).strip()
+                    break
+        relation_used = relation if relation and relation != "none" else (
+            infer_relation(self.blackboard.question) or relation
+        )
+
+        mode = self.numeric_conditioning
+        if mode == "off":
+            return None, {
+                "source": "numeric_conditioning_off",
+                "relation": relation_used,
+                "orchestrator_metric_raw": orch_metric_raw,
+            }
+        if mode == "categorical_only":
+            d = resolve_categorical_distance(relation_used)
+            return d, {
+                "source": "categorical_default_table",
+                "relation": relation_used,
+                "orchestrator_metric_raw": orch_metric_raw,
+            }
+
+        # mode == "on": deterministic parse of the question is the value.
+        d = self.metric_parse.value_m
+        if orch_metric_raw:
+            orch_parse = parse_metric_literal(orch_metric_raw)
+            disagree = (
+                orch_parse.value_m is None
+                or d is None
+                or abs(orch_parse.value_m - d) > 1e-6
+            )
+            if disagree:
+                warning = (
+                    f"schema_warning: orchestrator metric field {orch_metric_raw!r} "
+                    f"(parsed {orch_parse.value_m}) disagrees with deterministic parse "
+                    f"{d}; trusting the deterministic parse"
+                )
+                if warning not in self.metric_schema_warnings:
+                    self.metric_schema_warnings.append(warning)
+                    click.secho(f"[MSP] {warning}", fg="yellow")
+        return d, {
+            "source": "question_regex",
+            "relation": relation_used,
+            "orchestrator_metric_raw": orch_metric_raw,
+        }
+
+    def _scene_aabb(self, objects):
+        """Scene AABB from the mapped object centroids (Habitat frame)."""
+        if not objects:
+            return None, None
+        pts = np.asarray([o["position"] for o in objects], dtype=np.float32)
+        return pts.min(axis=0).tolist(), pts.max(axis=0).tolist()
+
+    def _get_pathfinder(self):
+        """The habitat pathfinder reachable through sg_sim, or None.
+
+        Same access pattern as the injected snap function: sg_sim may
+        expose it directly or via its wrapped sim. MAPG-12 additionally
+        uses it (get_bounds + snap_point) to build the navmesh grid.
+        """
+        try:
+            pf = getattr(self.sg_sim, "pathfinder", None)
+            if pf is None:
+                sim = getattr(self.sg_sim, "sim", None)
+                pf = getattr(sim, "pathfinder", None) if sim is not None else None
+            return pf
+        except Exception:
+            return None
+
+    def _get_navmesh_snap_fn(self):
+        """Navmesh snap function, injectable and skippable.
+
+        Outside the container (no habitat pathfinder reachable through
+        sg_sim) this returns None and the on_navmesh check is recorded
+        as skipped instead of silently passing.
+        """
+        try:
+            pf = self._get_pathfinder()
+            if pf is None or not hasattr(pf, "snap_point"):
+                return None
+
+            def _snap(p):
+                try:
+                    s = pf.snap_point([float(p[0]), float(p[1]), float(p[2])])
+                    s = [float(s[0]), float(s[1]), float(s[2])]
+                    if any(x != x for x in s):
+                        return None
+                    return s
+                except Exception:
+                    return None
+
+            return _snap
+        except Exception:
+            return None
+
+    def _resolve_candidate_size(self, oid):
+        """MAPG-01: (size_hab, source, reason) for one object node.
+
+        Under kernel_bandwidths=from_bbox the size is the node's real
+        Hydra AABB extents reordered to the habitat y-up frame; a
+        missing or invalid box falls back to the fixed 0.5 m cube with
+        a recorded reason. Never raises.
+        """
+        extents = None
+        extents_err = None
+        if self.kernel_bandwidths == "from_bbox":
+            getter = getattr(self.sg_sim, "get_extents_from_id", None)
+            if getter is None:
+                extents_err = "sg_sim has no get_extents_from_id"
+            else:
+                try:
+                    extents = getter(oid)
+                except Exception as e:
+                    extents_err = f"extents lookup failed: {e}"
+        if extents_err is not None:
+            return list(FIXED_SIZE_M), "fixed_fallback", extents_err
+        return resolve_object_size_hab(extents, self.kernel_bandwidths)
+
     def _get_scene_data(self):
         from src.envs.utils import pos_normal_to_habitat
         objects, frontiers = [], []
+        self._size_provenance = {}
         for oid, name in zip(self.sg_sim.object_node_ids, self.sg_sim.object_node_names):
             pos_norm = self.sg_sim.get_position_from_id(oid)
             if pos_norm is not None:
                 pos_hab = np.asarray(pos_normal_to_habitat(np.asarray(pos_norm, dtype=np.float32)), dtype=np.float32)
-                objects.append({"id": str(oid), "name": str(name).lower(), "position": pos_hab.tolist(), "size": [0.5, 0.5, 0.5]})
-        
+                # MAPG-01: real AABB extents (habitat y-up order) instead
+                # of the historical hardcoded 0.5 m cube.
+                size_hab, size_source, size_reason = self._resolve_candidate_size(oid)
+                self._size_provenance[str(oid)] = (size_source, size_reason)
+                if size_reason is not None:
+                    click.secho(f"[MSP] size fallback for {oid}: {size_reason}", fg="yellow")
+                objects.append({"id": str(oid), "name": str(name).lower(), "position": pos_hab.tolist(), "size": size_hab})
+
         for fid in getattr(self.sg_sim, "frontier_node_ids", []) or []:
             pos_norm = self.sg_sim.get_position_from_id(fid)
             if pos_norm is not None:
                 pos_hab = np.asarray(pos_normal_to_habitat(np.asarray(pos_norm, dtype=np.float32)), dtype=np.float32)
-                frontiers.append({"id": str(fid), "name": "frontier", "position": pos_hab.tolist(), "size": [0.5, 0.5, 0.5]})
+                # Frontiers have no AABB; keep the fixed cube.
+                frontiers.append({"id": str(fid), "name": "frontier", "position": pos_hab.tolist(), "size": list(FIXED_SIZE_M)})
         return objects, frontiers
 
     def get_next_action(self, agent_yaw_rad: float = 0.0, agent_pos_hab: Optional[np.ndarray] = None):
@@ -124,6 +423,12 @@ class MultiAgentMSPPlanner:
         
         # --- Step Header Logging ---
         step_num = self.blackboard.step_t + 1
+
+        # MAPG-02: a step that re-runs because the verifier rejected the
+        # previous one (P0 fix 3 retry loop, bounded by
+        # max_verifier_retries) is a retry; its calls are flagged so the
+        # accounting can separate first-attempt from retry spend.
+        is_retry_step = self.verifier_rejections > 0
         click.secho(f"\n{'='*20} MULTI-AGENT STEP {step_num} {'='*20}", fg="magenta", bold=True)
         click.secho(f"[Env] Pose: {agent_pos_hab.tolist()} | Yaw: {agent_yaw_rad:.3f} rad", fg="white")
         click.secho(f"[Env] Semantic State: {agent_state_str}", fg="white")
@@ -164,7 +469,11 @@ class MultiAgentMSPPlanner:
         # =====================================================================
         if self.blackboard.choices:
             click.secho(f"[Planner] Multiple Choice Query detected. Executing QA Fast Path.", fg="cyan")
-            qa_out = self.qa.process(self.blackboard)
+            qa_out = self.call_log.call(
+                "qa", self.qa.process, self.blackboard,
+                model_name=model_name_of(self.qa),
+                is_retry=is_retry_step, step_idx=step_num,
+            )
             if qa_out.get("ok", False):
                 action_type = qa_out.get("action_type", "lookaround")
                 chosen_id = qa_out.get("chosen_id", "NONE")
@@ -203,10 +512,18 @@ class MultiAgentMSPPlanner:
                 click.secho(f"[Planner] QA Fast Path crashed. Proceeding with standard fallback.", fg="red")
         
         # 2. Agent 1: Orchestrate
-        orch_out = self.orchestrator.process(self.blackboard)
-        
+        orch_out = self.call_log.call(
+            "orchestrator", self.orchestrator.process, self.blackboard,
+            model_name=model_name_of(self.orchestrator),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
+
         # 3. Agent 2: Ground
-        ground_out = self.grounder.process(self.blackboard, orch_out)
+        ground_out = self.call_log.call(
+            "grounding", self.grounder.process, self.blackboard, orch_out,
+            model_name=model_name_of(self.grounder),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
         
 
 
@@ -253,31 +570,65 @@ class MultiAgentMSPPlanner:
         primary_anchor_obj = next((o for o in objects if o["id"] == primary_anchor_id), objects[0])
 
         # 4. Agent 3: Spatial Geometry
-        spatial_out = self.spatial.process(self.blackboard, primary_anchor_obj)
+        spatial_out = self.call_log.call(
+            "spatial", self.spatial.process, self.blackboard, primary_anchor_obj,
+            model_name=model_name_of(self.spatial),
+            is_retry=is_retry_step, step_idx=step_num,
+        )
         if not spatial_out.get("ok", False):
             return finalize_step(self.sg_sim.get_position_from_id(primary_anchor_id), primary_anchor_id, False, 0.0, {"action_type": "goto_object", "chosen_id": primary_anchor_id, "thought": "Spatial failed (likely occluded). Moving closer to object."})
-
-        # 5. Agent 4: Verify
-        verification = self.verifier.process(self.blackboard)
-        if verification.get("status") == "FAIL":
-            self.blackboard.global_history += f"Step {step_num} FAIL: {verification.get('feedback')}\n"
-            fid = str(frontiers[0]["id"]) if frontiers else ""
-            return finalize_step(self.sg_sim.get_position_from_id(fid) if fid else None, fid, False, 0.0, {"action_type": "lookaround", "chosen_id": "", "thought": f"Verifier rejected logic: {verification.get('feedback')}"})
 
         # (QA Agent call has been moved to the MCQ Fast Path above)
 
         # =====================================================================
-        # 6. Run MSP Math (Probabilistic Scoring & Point Estimation)
+        # 5. Run MSP Math (Probabilistic Scoring & Point Estimation)
         # =====================================================================
-        dist_m = _parse_q_dist(self.blackboard.question)
+        # P0 fix 1: d0 comes ONLY from the deterministic parser (episode
+        # parse in __init__, mode-resolved here). None means the metric
+        # kernel is OMITTED from the composition, not defaulted to 1.0 m.
+        dist_m, metric_provenance = self._resolve_d0(orch_out)
+        metric_kernel_active = dist_m is not None
         anchor_pos = np.asarray(primary_anchor_obj["position"], dtype=np.float32)
-        
+
+        # P0 fix 2: GT anchor front yaw (bench ann_yaw_rad). Recorded
+        # always; USED only under cfg frames.gt_front for intrinsic
+        # relations (oracle-frames ablation). Default pipeline never
+        # consumes it: it is ground truth.
+        kernel_params_used = dict(spatial_out)
+        gt_front_used = False
+        if self.use_gt_front and self.gt_front_available:
+            theta_override = gt_front_theta(
+                self.gt_anchor_front_yaw, metric_provenance.get("relation")
+            )
+            if theta_override is not None:
+                kernel_params_used["theta"] = float(theta_override)
+                gt_front_used = True
+                click.secho(
+                    f"[MSP] frames.gt_front active: theta overridden to "
+                    f"{theta_override:.4f} rad from GT anchor front yaw.",
+                    fg="yellow",
+                )
+
+        # MAPG-01: bandwidths from the anchor's real AABB. The engine
+        # derives sigma_s/sigma_m/kappa from max(anchor_size), so we
+        # hand it an isotropic cube [s, s, s] with s the anchor's max
+        # horizontal extent (habitat x/z; vertical excluded on purpose,
+        # see src.msp.kernel_bandwidths.py):
+        #   sigma_s = sigma_s_factor * s (default 0.5 * s).
+        # Fixed mode and box fallbacks use the historical 0.5 m cube
+        # (sigma_s = 0.25 m), preserving pre-MAPG-01 behavior.
+        anchor_size_source, anchor_size_reason = self._size_provenance.get(
+            str(primary_anchor_id), ("fixed_fallback", "anchor missing from size provenance")
+        )
+        anchor_size_hab = [float(v) for v in primary_anchor_obj.get("size", list(FIXED_SIZE_M))]
+        engine_anchor_size, bandwidth_scale_m = bandwidth_size_hab(anchor_size_hab, anchor_size_source)
+
         msp_objects, msp_frontiers = self.msp_engine.score_candidates(
             objects=objects,
             frontiers=frontiers,
             anchor_pos_hab=anchor_pos,
-            anchor_size=primary_anchor_obj.get("size", [0.5, 0.5, 0.5]),
-            kernel_params=spatial_out,
+            anchor_size=engine_anchor_size,
+            kernel_params=kernel_params_used,
             question_dist=dist_m,
             planar=True,
             flatten_semantic=bool(getattr(self.cfg, "flatten_semantic", False))
@@ -285,21 +636,164 @@ class MultiAgentMSPPlanner:
 
         point_estimate = self.msp_engine.estimate_point_from_pdf(
             anchor_pos_hab=anchor_pos,
-            kernel_params=spatial_out,
+            kernel_params=kernel_params_used,
             question_dist=dist_m,
-            anchor_size=primary_anchor_obj.get("size", [0.5, 0.5, 0.5]),
+            anchor_size=engine_anchor_size,
             planar=True,
             use_map=True
         )
         point_xyz = np.asarray(point_estimate["xyz_chosen_hab"], dtype=np.float32)
 
-        # Extract the continuous PDF parameters from the shared debug trace 
+        # ------------------------------------------------------------------
+        # MAPG-12: masked, renormalized point estimate. Under
+        # density_masking=navmesh (default) the point is the argmax
+        # navigable cell of the density masked to Omega_free and
+        # renormalized (log_Z by logsumexp over navmesh grid cells), so
+        # it is navigable by construction. The pdf params are exactly the
+        # ones estimate_point_from_pdf scores with (anchor-only params,
+        # flatten_semantic_for_where default True). Fallbacks (mode off,
+        # no pathfinder, build failure) keep the unmasked estimate above
+        # and record the reason.
+        # ------------------------------------------------------------------
+        masked_pdf_params = {
+            k: v
+            for k, v in self.msp_engine._build_anchor_only_params(
+                anchor_pos_hab=anchor_pos,
+                anchor_size=engine_anchor_size,
+                distance_m=dist_m,
+                kernel_params=kernel_params_used,
+                planar=True,
+                flatten_semantic=True,
+            ).items()
+            if not str(k).startswith("_")
+        }
+        masked_xyz, density_masking_record, self._navmesh_grid = apply_density_masking(
+            mode=self.density_masking,
+            pathfinder=self._get_pathfinder(),
+            pdf_params=masked_pdf_params,
+            cell_size_m=self.navmesh_grid_m,
+            tau_m=DEFAULT_TAU_M,
+            grid=self._navmesh_grid,
+        )
+        if masked_xyz is not None:
+            point_xyz = np.asarray(masked_xyz, dtype=np.float32)
+        elif density_masking_record.get("density_masking_reason"):
+            click.secho(
+                f"[MSP] density masking inactive: "
+                f"{density_masking_record['density_masking_reason']}",
+                fg="yellow",
+            )
+
+        # Extract the continuous PDF parameters from the shared debug trace
         # (All candidates share the same anchor-centric pdf params)
         extracted_pdf_params = {}
         if msp_objects:
             extracted_pdf_params = msp_objects[0].get("_msp_debug", {}).get("metric_semantic_params", {})
             predicates = msp_objects[0].get("_msp_debug", {}).get("predicate_params", {})
             extracted_pdf_params.update(predicates)
+        # Ablation-visible provenance in pdf_params.
+        extracted_pdf_params["metric_kernel_active"] = bool(metric_kernel_active)
+        extracted_pdf_params["gt_anchor_front_yaw"] = self.gt_anchor_front_yaw
+        extracted_pdf_params["gt_front_used"] = bool(gt_front_used)
+        # MAPG-01: bandwidth size provenance (sigma_s = sigma_s_factor *
+        # bandwidth_scale_m; scale is the anchor's max horizontal extent
+        # under from_bbox, 0.5 m under fixed or any fallback).
+        extracted_pdf_params["kernel_bandwidths"] = self.kernel_bandwidths
+        extracted_pdf_params["anchor_size_source"] = anchor_size_source
+        extracted_pdf_params["anchor_size_fallback_reason"] = anchor_size_reason
+        extracted_pdf_params["anchor_size_hab"] = anchor_size_hab
+        extracted_pdf_params["bandwidth_scale_m"] = float(bandwidth_scale_m)
+        # MAPG-12: masking provenance (density_masked, log_Z,
+        # mass_in_tau_ball at tau = 1.0 m, fallback reason if any).
+        extracted_pdf_params.update(density_masking_record)
+
+        metric_parse_record = {
+            "value_m": self.metric_parse.value_m,
+            "unit": self.metric_parse.unit,
+            "raw": self.metric_parse.raw,
+            "warnings": list(self.metric_parse.warnings),
+            "schema_warnings": list(self.metric_schema_warnings),
+            "numeric_conditioning": self.numeric_conditioning,
+            "d0_used_m": dist_m,
+            "provenance": metric_provenance,
+        }
+        gt_front_record = {
+            "available": bool(self.gt_front_available),
+            "value_rad": self.gt_anchor_front_yaw,
+            "cfg_enabled": bool(self.use_gt_front),
+            "used": bool(gt_front_used),
+        }
+
+        # =====================================================================
+        # 6. Verify (P0 fix 3: programmatic checks first, LLM optional)
+        # =====================================================================
+        scene_min, scene_max = self._scene_aabb(objects)
+        checks = run_checks(
+            spatial_payload=spatial_out,
+            required_fields=("theta", "phi"),
+            prediction_xyz=point_xyz.tolist(),
+            anchor_xyz=anchor_pos.tolist(),
+            d0_m=dist_m,
+            sigma_m=(float(point_estimate.get("sigma_m_used")) if metric_kernel_active else None),
+            scene_min=scene_min,
+            scene_max=scene_max,
+            navmesh_snap_fn=self._get_navmesh_snap_fn(),
+        )
+        # MAPG-02: the verifier only hits the LLM when the critique is
+        # enabled AND the programmatic checks passed; it reports that via
+        # llm_used. record_if keeps programmatic-only verifications out
+        # of the call count.
+        verification = self.call_log.call(
+            "verifier", self.verifier.process, self.blackboard, checks=checks,
+            model_name=model_name_of(self.verifier),
+            is_retry=is_retry_step, step_idx=step_num,
+            record_if=lambda out: bool(isinstance(out, dict) and out.get("llm_used", False)),
+        )
+        verifier_record = {
+            "status": verification.get("status"),
+            "feedback": verification.get("feedback", ""),
+            "llm_used": verification.get("llm_used", False),
+            "llm_error": verification.get("llm_error"),
+            "checks": checks,
+            "rejections_so_far": self.verifier_rejections,
+        }
+
+        if verification.get("status") == "FAIL":
+            if self.verifier_rejections < self.max_verifier_retries:
+                # Existing retry path: feedback into global history, one
+                # exploration step, bounded at max_verifier_retries.
+                self.verifier_rejections += 1
+                verifier_record["rejections_so_far"] = self.verifier_rejections
+                self.blackboard.global_history += (
+                    f"Step {step_num} FAIL: {verification.get('feedback')}\n"
+                )
+                fid = str(frontiers[0]["id"]) if frontiers else ""
+                return finalize_step(
+                    self.sg_sim.get_position_from_id(fid) if fid else None,
+                    fid, False, 0.0,
+                    {
+                        "action_type": "lookaround",
+                        "chosen_id": "",
+                        "thought": f"Verifier rejected logic: {verification.get('feedback')}",
+                        "verifier": verifier_record,
+                        "metric_parse": metric_parse_record,
+                        "metric_kernel_active": bool(metric_kernel_active),
+                        "gt_front": gt_front_record,
+                    },
+                )
+            # Retry budget exhausted: record the terminal failure and
+            # proceed instead of livelocking on exploration.
+            verifier_record["retry_budget_exhausted"] = True
+            self.blackboard.global_history += (
+                f"Step {step_num} verifier FAIL after {self.max_verifier_retries} "
+                f"retries; proceeding with best-effort answer.\n"
+            )
+            click.secho(
+                "[Verifier] FAIL after retry budget exhausted; proceeding.",
+                fg="red",
+            )
+        else:
+            self.verifier_rejections = 0
 
         # Build output structure with PDF, point, and top K objects
         
@@ -399,7 +893,11 @@ class MultiAgentMSPPlanner:
                  "thought": thought,
                  "pdf_params": extracted_pdf_params,
                  "target_location": point_xyz.tolist(),
-                 "top_k_objects": top_k_objects
+                 "top_k_objects": top_k_objects,
+                 "metric_parse": metric_parse_record,
+                 "metric_kernel_active": bool(metric_kernel_active),
+                 "gt_front": gt_front_record,
+                 "verifier": verifier_record
              }))
              
         is_location_target = any(w in orch_out.get("target_entity", "").lower() for w in ["location", "region", "point", "place", "area"])
@@ -427,15 +925,23 @@ class MultiAgentMSPPlanner:
         if same_room_frontiers:
             fid = same_room_frontiers[0]["id"]
             return finalize_step(self.sg_sim.get_position_from_id(fid), fid, False, 0.0, {
-                "action_type": "goto_frontier", 
-                "chosen_id": fid, 
-                "thought": f"Exploring remaining frontiers inside the anchor's room ({anchor_room_id})."
+                "action_type": "goto_frontier",
+                "chosen_id": fid,
+                "thought": f"Exploring remaining frontiers inside the anchor's room ({anchor_room_id}).",
+                "verifier": verifier_record,
+                "metric_parse": metric_parse_record,
+                "metric_kernel_active": bool(metric_kernel_active),
+                "gt_front": gt_front_record
             })
-            
+
         # Fallback
         fid = str(frontiers[0]["id"]) if frontiers else ""
         return finalize_step(self.sg_sim.get_position_from_id(fid) if fid else None, fid, False, 0.0, {
-            "action_type": "lookaround" if not fid else "goto_frontier", 
-            "chosen_id": fid, 
-            "thought": "Fallback exploration triggered."
+            "action_type": "lookaround" if not fid else "goto_frontier",
+            "chosen_id": fid,
+            "thought": "Fallback exploration triggered.",
+            "verifier": verifier_record,
+            "metric_parse": metric_parse_record,
+            "metric_kernel_active": bool(metric_kernel_active),
+            "gt_front": gt_front_record
         })

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import json
 import math
+import time
 import base64
 import mimetypes
 from pathlib import Path
@@ -14,6 +15,10 @@ from typing import Optional, Any, Dict, List, Tuple
 import numpy as np
 import google.generativeai as genai
 
+# MAPG-02: real per-call accounting. The Gemini response objects are
+# built in this file, so token counts come from resp.usage_metadata.
+from src.results.calls import CallLog, extract_usage
+
 # Graph EQA / Habitat imports
 from src.envs.utils import pos_normal_to_habitat
 from src.utils.data_utils import get_latest_image
@@ -21,6 +26,27 @@ from src.schema.prediction import normalize_prediction
 
 # MSP imports
 from src.msp.pdf import combined_logpdf as _combined_logpdf
+
+# MAPG-12: navmesh masking + renormalization (pure numpy, pathfinder
+# injected; no habitat import at module level)
+from src.msp.navmesh_density import (
+    DEFAULT_CELL_SIZE_M,
+    DEFAULT_TAU_M,
+    apply_density_masking,
+    resolve_masking_mode,
+)
+
+# P0 fix 1: single deterministic source for d0 (no silent 1.0 m default)
+from src.parsing.metric_literal import (
+    parse_metric_literal,
+    infer_relation,
+    resolve_categorical_distance,
+)
+
+# Point-guess radius when the metric kernel is omitted (no literal in the
+# utterance). This is a PROPOSAL radius for the reported point only, not a
+# kernel parameter: candidate scoring keeps the metric kernel flat.
+_NO_METRIC_POINT_GUESS_RADIUS_M = 1.5
 
 
 # =============================================================================
@@ -33,7 +59,8 @@ if "GOOGLE_API_KEY" not in os.environ:
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 # Keep a single global model instance
-gemini_model = genai.GenerativeModel(model_name="models/gemini-2.5-pro")
+_GEMINI_MODEL_NAME = "models/gemini-2.5-pro"
+gemini_model = genai.GenerativeModel(model_name=_GEMINI_MODEL_NAME)
 
 
 # =============================================================================
@@ -135,10 +162,16 @@ def _camera_theta_to_world(vlm_theta: float, agent_yaw: float) -> float:
     return _wrap_angle(agent_yaw + float(vlm_theta))
 
 
-def _parse_q_dist(question: str) -> float:
-    import re
-    m = re.search(r"(\d+(?:\.\d+)?)\s*meters?", (question or "").lower())
-    return float(m.group(1)) if m else 1.0
+def _parse_q_dist(question: str) -> Optional[float]:
+    """Deterministic metric-literal parse (P0 fix 1: d0 single source).
+
+    Returns the parsed distance in meters, or None when the utterance
+    has no metric literal. There is NO default anymore: the old version
+    silently returned 1.0 here, fabricating a hard metric constraint
+    for every no-distance query. None now means the metric kernel is
+    omitted from the composition downstream.
+    """
+    return parse_metric_literal(question).value_m
 
 
 def _unit_dir_from_theta_phi(theta: float, phi: float) -> np.ndarray:
@@ -172,6 +205,7 @@ def get_vlm_spatial_kernel_params(
     anchor_front_yaw_world: Optional[float] = None,  # kept for logging only
     log_jsonl_path: Optional[Path] = None,
     step_t: Optional[int] = None,
+    call_log: Optional[CallLog] = None,
 ) -> Dict[str, Any]:
     """
     VLM-only kernel.
@@ -180,6 +214,11 @@ def get_vlm_spatial_kernel_params(
       ok: bool
       (if ok) theta, phi, kappa, reasoning, debug
       (if not ok) error, debug
+
+    MAPG-02: when call_log is given, the Gemini invocation is recorded
+    as one call with usage_metadata token counts. The no-image early
+    return records nothing (the API is never hit); an API error is
+    still one call with unknown tokens.
     """
     # normalize (kept to avoid accidental type issues)
     _ = np.asarray(anchor_pos_hab, dtype=np.float32)
@@ -290,6 +329,8 @@ Return JSON only.
     ]
 
     raw_text = ""
+    _t0 = time.perf_counter()
+    _call_recorded = False
     try:
         resp = gemini_model.generate_content(
             messages,
@@ -299,6 +340,17 @@ Return JSON only.
                 response_schema=schema,
             ),
         )
+        if call_log is not None:
+            _pt, _ct = extract_usage(resp)
+            call_log.record(
+                "kernel",
+                model_name=_GEMINI_MODEL_NAME,
+                prompt_tokens=_pt,
+                completion_tokens=_ct,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=step_t,
+            )
+            _call_recorded = True
         raw_text = resp.text
         d = json.loads(resp.text)
 
@@ -355,6 +407,15 @@ Return JSON only.
         return out
 
     except Exception as e:
+        # The API was invoked (only the no-image path returns before the
+        # call); record it once even when the response or parse failed.
+        if call_log is not None and not _call_recorded:
+            call_log.record(
+                "kernel",
+                model_name=_GEMINI_MODEL_NAME,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=step_t,
+            )
         out = {
             "ok": False,
             "error": f"VLM kernel call failed; no fallback allowed. Error: {e}",
@@ -397,13 +458,23 @@ class MSPEngineSmart:
         anchor_pos_hab: np.ndarray,
         candidate_pos_hab: np.ndarray,
         candidate_size: Optional[List[float]],
-        distance_m: float,
+        distance_m: Optional[float],
     ) -> Dict[str, float]:
+        """Metric + semantic kernel params for one candidate.
+
+        distance_m may be None (no metric literal in the utterance). The
+        metric kernel is then OMITTED from the composition: d0 = 0 with
+        sigma_m = 1e6 makes the radial exponent numerically zero, the
+        same mechanism flatten_semantic uses for the semantic kernel.
+        No fabricated 1.0 m default. metric_kernel_active records the
+        state for ablations (extra keys are ignored by combined_logpdf).
+        """
         pos = np.asarray(anchor_pos_hab, dtype=np.float32)
         size = candidate_size or [0.5, 0.5, 0.5]
         w, d, h = [float(x) for x in size[:3]]
         max_dim = max(w, d, h)
 
+        metric_active = distance_m is not None
         return {
             "mu_x": float(pos[0]),
             "mu_y": float(pos[1]),
@@ -412,8 +483,9 @@ class MSPEngineSmart:
             "x0": float(anchor_pos_hab[0]),
             "y0": float(anchor_pos_hab[1]),
             "z0": float(anchor_pos_hab[2]),
-            "d0": float(distance_m),
-            "sigma_m": 0.3 * max_dim,
+            "d0": float(distance_m) if metric_active else 0.0,
+            "sigma_m": (0.3 * max_dim) if metric_active else 1.0e6,
+            "metric_kernel_active": bool(metric_active),
         }
 
     def score_point(
@@ -503,7 +575,7 @@ class MSPEngineSmart:
 
 
 # =============================================================================
-# STEP 3: Planner — VLM sees scored candidates + point guess, logs everything
+# STEP 3: Planner: VLM sees scored candidates + point guess, logs everything
 # =============================================================================
 
 class VLMPlannerMSP_Smart:
@@ -549,12 +621,64 @@ class VLMPlannerMSP_Smart:
         if self._anchor_center_hab is not None:
             self._anchor_center_hab = np.asarray(self._anchor_center_hab, dtype=np.float32)
 
-        # kept for logging / cues only (kernel will NOT fallback to this)
+        # P0 fix 2: GT anchor front yaw (bench ann_yaw_rad). Recorded in
+        # every trace; USED only when cfg frames.gt_front is true (the
+        # oracle-frames ablation). It is ground truth: the default
+        # pipeline must never consume it.
         self._anchor_front_yaw_world: Optional[float] = kwargs.get("anchor_front_yaw_world", None)
         if self._anchor_front_yaw_world is not None:
             self._anchor_front_yaw_world = float(self._anchor_front_yaw_world)
+        self._gt_front_available: bool = self._anchor_front_yaw_world is not None
+        try:
+            _frames_cfg = getattr(cfg, "frames", None)
+            self._use_gt_front: bool = bool(getattr(_frames_cfg, "gt_front", False)) if _frames_cfg is not None else False
+        except Exception:
+            self._use_gt_front = False
+
+        # P0 fix 1: d0 single source. Parse the metric literal ONCE per
+        # episode; no default (None = metric kernel omitted). The
+        # numeric_conditioning flag keeps the pathway ablatable:
+        # on / off / categorical_only (per-relation nominal distances).
+        self._numeric_conditioning: str = str(
+            getattr(cfg, "numeric_conditioning", "on") or "on"
+        ).lower().strip()
+        if self._numeric_conditioning not in ("on", "off", "categorical_only"):
+            self._numeric_conditioning = "on"
+        self._metric_parse = parse_metric_literal(question)
+        if self._numeric_conditioning == "off":
+            self._dist_m: Optional[float] = None
+        elif self._numeric_conditioning == "categorical_only":
+            self._dist_m = resolve_categorical_distance(infer_relation(question))
+        else:
+            self._dist_m = self._metric_parse.value_m
+        self._metric_kernel_active: bool = self._dist_m is not None
 
         self.msp_engine = MSPEngineSmart()
+
+        # ------------------------------------------------------------------
+        # MAPG-12: navmesh masking + renormalization. Under
+        # density_masking=navmesh (default) the WHERE point guess is the
+        # argmax navigable cell of the masked, renormalized density
+        # instead of the analytic anchor + r * dir construction; "off" is
+        # the ablation arm (old behavior). No pathfinder reachable means
+        # fall back to off with the reason recorded in the trace.
+        # ------------------------------------------------------------------
+        self._density_masking, _dm_warn = resolve_masking_mode(
+            getattr(cfg, "density_masking", None)
+        )
+        if _dm_warn:
+            print(f"[MSP SMART] {_dm_warn}")
+        self._navmesh_grid_m = float(
+            getattr(cfg, "navmesh_grid_m", DEFAULT_CELL_SIZE_M) or DEFAULT_CELL_SIZE_M
+        )
+        self._navmesh_grid = None
+
+        # MAPG-02: per-call accounting. The runner's vlm_calls rollup is
+        # call_log.total() (2 calls on a full step: kernel + selector; 0
+        # on anchor-missing steps; 1 when the kernel fails before the
+        # selector). This planner has no retry loop, so is_retry stays
+        # False on every row.
+        self.call_log = CallLog()
 
         self._vlm_calls_path = self._out_path / "vlm_calls.jsonl"
 
@@ -574,6 +698,17 @@ class VLMPlannerMSP_Smart:
                     self._anchor_center_hab.tolist() if self._anchor_center_hab is not None else None
                 ),
                 "anchor_front_yaw_world": self._anchor_front_yaw_world,
+                "gt_front_available": self._gt_front_available,
+                "frames_gt_front": self._use_gt_front,
+                "numeric_conditioning": self._numeric_conditioning,
+                "metric_parse": {
+                    "value_m": self._metric_parse.value_m,
+                    "unit": self._metric_parse.unit,
+                    "raw": self._metric_parse.raw,
+                    "warnings": list(self._metric_parse.warnings),
+                },
+                "d0_used_m": self._dist_m,
+                "metric_kernel_active": self._metric_kernel_active,
             },
         )
 
@@ -586,6 +721,22 @@ class VLMPlannerMSP_Smart:
     @property
     def t(self) -> int:
         return self._t
+
+    def _get_pathfinder(self):
+        """The habitat pathfinder reachable through sg_sim, or None.
+
+        MAPG-12: used (get_bounds + snap_point) to build the navmesh
+        grid for density masking. Same access pattern as the verifier's
+        injected snap function in the multi-agent planner.
+        """
+        try:
+            pf = getattr(self.sg_sim, "pathfinder", None)
+            if pf is None:
+                sim = getattr(self.sg_sim, "sim", None)
+                pf = getattr(sim, "pathfinder", None) if sim is not None else None
+            return pf
+        except Exception:
+            return None
 
     def _get_scene_data(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         objects: List[Dict[str, Any]] = []
@@ -702,7 +853,7 @@ class VLMPlannerMSP_Smart:
         anchor_name: str,
         anchor_pos_hab: np.ndarray,
         kernel: Dict[str, Any],
-        dist_m: float,
+        dist_m: Optional[float],
         top_objects: List[Dict[str, Any]],
         top_frontiers: List[Dict[str, Any]],
         point_guess: Optional[Dict[str, Any]],
@@ -734,6 +885,11 @@ class VLMPlannerMSP_Smart:
                 f"- id={f['id']} score={f.get('msp_score',0.0):.3f} xyz_hab=[{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}]"
             )
 
+        dist_str = (
+            f"{dist_m:.3f}" if dist_m is not None
+            else "unspecified (no metric literal; metric kernel omitted)"
+        )
+
         point_block = "POINT_GUESS: none\n"
         if point_guess is not None:
             pg = point_guess["target_xyz_hab"]
@@ -752,7 +908,7 @@ Question: {self._question}
 Anchor:
 - name: {anchor_name}
 - anchor_xyz_hab: [{anchor_pos_hab[0]:.3f},{anchor_pos_hab[1]:.3f},{anchor_pos_hab[2]:.3f}]
-- requested_distance_m: {dist_m:.3f}
+- requested_distance_m: {dist_str}
 
 Spatial Kernel (world):
 - theta_world: {kernel['theta']:.4f}
@@ -813,13 +969,35 @@ Output STRICT JSON only:
         )
 
         messages = [{"role": "user", "parts": [{"text": prompt}]}]
-        resp = gemini_model.generate_content(
-            messages,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                response_schema=selector_schema,
-            ),
+        # MAPG-02: record the selector invocation with usage_metadata
+        # token counts; an API error is still one call (unknown tokens)
+        # before the exception propagates to the caller's fallback.
+        _t0 = time.perf_counter()
+        try:
+            resp = gemini_model.generate_content(
+                messages,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                    response_schema=selector_schema,
+                ),
+            )
+        except Exception:
+            self.call_log.record(
+                "selector",
+                model_name=_GEMINI_MODEL_NAME,
+                latency_ms=(time.perf_counter() - _t0) * 1000.0,
+                step_idx=self._t,
+            )
+            raise
+        _pt, _ct = extract_usage(resp)
+        self.call_log.record(
+            "selector",
+            model_name=_GEMINI_MODEL_NAME,
+            prompt_tokens=_pt,
+            completion_tokens=_ct,
+            latency_ms=(time.perf_counter() - _t0) * 1000.0,
+            step_idx=self._t,
         )
         return json.loads(resp.text), resp.text
 
@@ -941,6 +1119,7 @@ Output STRICT JSON only:
             anchor_front_yaw_world=self._anchor_front_yaw_world,
             log_jsonl_path=self._vlm_calls_path,
             step_t=self._t,
+            call_log=self.call_log,
         )
 
         if not kernel.get("ok", False):
@@ -995,7 +1174,26 @@ Output STRICT JSON only:
             self._t += 1
             return None, None, False, 0.0, normalize_prediction(plan)
 
-        dist_m = _parse_q_dist(self._question)
+        # P0 fix 1: d0 resolved once per episode in __init__ from the
+        # deterministic parser. None = no metric literal = metric kernel
+        # omitted from the composition (no fabricated 1.0 m).
+        dist_m = self._dist_m
+
+        # P0 fix 2: oracle-frames ablation only. Override the kernel yaw
+        # with the GT anchor front yaw when cfg frames.gt_front is true
+        # and the relation is intrinsic. Recorded either way.
+        gt_front_used = False
+        if self._use_gt_front and self._gt_front_available:
+            from src.planners.msp_engine_numeric import gt_front_theta
+            theta_override = gt_front_theta(
+                self._anchor_front_yaw_world, infer_relation(self._question)
+            )
+            if theta_override is not None:
+                kernel = dict(kernel)
+                kernel["theta"] = float(theta_override)
+                gt_front_used = True
+        kernel["gt_anchor_front_yaw"] = self._anchor_front_yaw_world
+        kernel["gt_front_used"] = bool(gt_front_used)
 
         # ---------------------------------------------------------------------
         # MSP scoring
@@ -1008,9 +1206,39 @@ Output STRICT JSON only:
             question_dist=dist_m,
         )
 
-        # WHERE point guess always computed/logged (selector can ignore)
+        # WHERE point guess always computed/logged (selector can ignore).
+        # Without a metric literal the radius is a documented proposal
+        # value, not a kernel parameter (the density has no radial peak).
         dir_world = _unit_dir_from_theta_phi(float(kernel["theta"]), float(kernel["phi"]))
-        point_xyz = (anchor_pos + float(dist_m) * dir_world).astype(np.float32)
+        point_radius_m = float(dist_m) if dist_m is not None else _NO_METRIC_POINT_GUESS_RADIUS_M
+        point_xyz = (anchor_pos + point_radius_m * dir_world).astype(np.float32)
+
+        # MAPG-12: under density_masking=navmesh the point guess is the
+        # argmax navigable cell of the masked, renormalized density (the
+        # same anchor-only params score_point uses), replacing the
+        # analytic construction above. Fallbacks (off, no pathfinder,
+        # build failure) keep the analytic guess and record the reason.
+        masked_pdf_params = {
+            **self.msp_engine._get_metric_semantic_params(
+                anchor_pos_hab=anchor_pos,
+                candidate_pos_hab=anchor_pos,
+                candidate_size=[0.5, 0.5, 0.5],
+                distance_m=dist_m,
+            ),
+            "theta0": float(kernel["theta"]),
+            "phi0": float(kernel["phi"]),
+            "kappa": float(kernel["kappa"]),
+        }
+        masked_xyz, density_masking_record, self._navmesh_grid = apply_density_masking(
+            mode=self._density_masking,
+            pathfinder=self._get_pathfinder(),
+            pdf_params=masked_pdf_params,
+            cell_size_m=self._navmesh_grid_m,
+            tau_m=DEFAULT_TAU_M,
+            grid=self._navmesh_grid,
+        )
+        if masked_xyz is not None:
+            point_xyz = np.asarray(masked_xyz, dtype=np.float32)
 
         point_logp = self.msp_engine.score_point(
             point_hab=point_xyz,
@@ -1020,7 +1248,14 @@ Output STRICT JSON only:
             candidate_size=[0.5, 0.5, 0.5],
         )
 
-        point_guess = {"id": "POINT_GUESS", "target_xyz_hab": point_xyz.tolist(), "msp_score": float(point_logp)}
+        point_guess = {
+            "id": "POINT_GUESS",
+            "target_xyz_hab": point_xyz.tolist(),
+            "msp_score": float(point_logp),
+            # MAPG-12 provenance: density_masked, log_Z, mass_in_tau_ball
+            # (tau 1.0 m), fallback reason when unmasked.
+            "density_masking": density_masking_record,
+        }
 
         K_OBJ = int(getattr(self.cfg, "selector_topk_objects", 12))
         K_FR = int(getattr(self.cfg, "selector_topk_frontiers", 8))
@@ -1042,6 +1277,8 @@ Output STRICT JSON only:
             },
             "kernel": kernel,
             "dist_m": dist_m,
+            "metric_kernel_active": self._metric_kernel_active,
+            "numeric_conditioning": self._numeric_conditioning,
             "point_guess": point_guess,
             "top_objects": [
                 {"id": o["id"], "name": o.get("name", ""), "msp_score": float(o.get("msp_score", 0.0)), "pos_hab": o.get("position")}
@@ -1083,7 +1320,7 @@ Output STRICT JSON only:
                 {"type": "selector_error", "t": self._t, "mode": self.answer_mode, "error": str(e), "raw_response_text": raw_text},
             )
 
-            # Selector fallback (kept) — kernel fallback removed, selector fallback still OK.
+            # Selector fallback (kept): kernel fallback removed, selector fallback still OK.
             if len(top_objects) > 0:
                 plan = {
                     "thought": f"Selector failed; fallback to best object. Error={e}",
@@ -1209,10 +1446,15 @@ Output STRICT JSON only:
             "reasoning": kernel.get("reasoning", ""),
             "debug": kernel.get("debug", {}),
             "image_path": img_path,
+            "gt_anchor_front_yaw": self._anchor_front_yaw_world,
+            "gt_front_available": self._gt_front_available,
+            "gt_front_used": bool(kernel.get("gt_front_used", False)),
         }
 
         score_trace = {
-            "dist_m": float(dist_m),
+            "dist_m": (float(dist_m) if dist_m is not None else None),
+            "metric_kernel_active": self._metric_kernel_active,
+            "numeric_conditioning": self._numeric_conditioning,
             "point_guess": {"xyz_hab": point_xyz.tolist(), "score": float(point_logp)},
             "objects": _summarize_rank_delta(msp_objects, k=8),
             "frontiers": _summarize_rank_delta(msp_frontiers, k=6),
