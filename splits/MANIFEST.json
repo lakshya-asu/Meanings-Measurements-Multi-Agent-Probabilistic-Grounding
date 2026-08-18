@@ -13,5 +13,15 @@
       "date_frozen": "2026-08-15",
       "frozen": true
     }
+  },
+  "aux_files": {
+    "synonyms_v1": {
+      "name": "synonyms_v1",
+      "path": "splits/synonyms_v1.json",
+      "sha256": "54b9568e03f49eea918e5888012f8b5507c9dc1d71ae9ed68dd7c2b7dbd4d9dc",
+      "date": "2026-08-15",
+      "frozen": false,
+      "note": "lenient-cascade synonym table; freeze at benchmark release"
+    }
   }
 }
