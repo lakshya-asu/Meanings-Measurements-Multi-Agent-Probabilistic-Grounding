@@ -179,8 +179,73 @@ def _cfg_get(node, key: str, default):
     except Exception:
         return default
 
+
+def _build_or_resume_manifest(cfg, output_path, run_seed, run_split, resume):
+    """Build a fresh manifest or extend an aborted run with a resume segment."""
+    fresh = build_manifest(cfg, seed=run_seed, split_name=run_split)
+    if not resume:
+        return fresh
+
+    manifest_path = Path(output_path) / "run.json"
+    if not manifest_path.exists():
+        raise RuntimeError(
+            f"--resume requires an existing run manifest: {manifest_path}"
+        )
+    with open(manifest_path, "r") as f:
+        existing = json.load(f)
+
+    for key in ("seed", "split", "split_sha256", "config_sha256"):
+        if existing.get(key) != fresh.get(key):
+            raise RuntimeError(
+                f"--resume manifest mismatch for {key}: "
+                f"existing={existing.get(key)!r}, current={fresh.get(key)!r}"
+            )
+
+    segments = list(existing.get("resume_segments", []))
+    segments.append({
+        "resume_index": len(segments) + 1,
+        "reason": "resume_after_abort",
+        "start_time_utc": fresh["start_time_utc"],
+        "git_sha": fresh["git_sha"],
+        "git_sha_short": fresh["git_sha_short"],
+        "git_branch": fresh["git_branch"],
+        "git_dirty": fresh["git_dirty"],
+        "config_sha256": fresh["config_sha256"],
+        "renderer": fresh["renderer"],
+    })
+    existing["resume_segments"] = segments
+    return existing
+
+
+def _archive_partial_episode_dir(output_path, experiment_id):
+    """Move an unrecorded partial episode aside before a resume retry."""
+    episode_path = Path(output_path) / experiment_id
+    if not episode_path.exists():
+        return None
+
+    archive_root = Path(output_path) / "aborted_attempts"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_root / f"{experiment_id}_{time.time_ns()}"
+    episode_path.rename(archive_path)
+    return archive_path
+
+
+def _restore_resume_spend(governor, results_store, run_id, run_manifest, resume):
+    """Seed the governor from persisted calls before a resumed segment."""
+    if not resume or governor is None:
+        return None
+
+    prior_calls = results_store.calls(run_id)
+    governor.charge_rows(prior_calls)
+    summary = governor.summary()
+    segment = run_manifest["resume_segments"][-1]
+    segment["prior_calls_charged"] = len(prior_calls)
+    segment["prior_spend_usd"] = summary["total_spend_usd"]
+    return summary
+
+
 def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
-         limit: int = 0):
+         limit: int = 0, resume: bool = False):
     click.secho(f"[mode] MULTI-AGENT VLM runner | Dataset: {dataset_type}", fg="cyan")
 
     import os
@@ -230,8 +295,18 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
     run_split = str(_cfg_get(cfg, "split", "unknown") or "unknown")
     run_method = "multi_agent"
     run_backend = str(_cfg_get(cfg.vlm, "name", "unknown") or "unknown")
-    run_manifest = build_manifest(cfg, seed=run_seed, split_name=run_split)
+    run_manifest = _build_or_resume_manifest(
+        cfg, output_path, run_seed, run_split, resume
+    )
     results_store = ResultsStore(output_path / "results.sqlite")
+    if resume:
+        prior_status = results_store.run_status(str(run_manifest["run_id"]))
+        if prior_status != "aborted":
+            results_store.close()
+            raise RuntimeError(
+                "--resume requires the existing run status to be aborted, "
+                f"got {prior_status!r}"
+            )
     run_id = results_store.start_run(run_manifest)
     write_manifest(run_manifest, output_path)
     run_status = "aborted"
@@ -247,6 +322,23 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
             "Benchmark cfgs must define cost_caps (preflight check h).",
             fg="red",
         )
+    else:
+        restored_spend = _restore_resume_spend(
+            cost_governor,
+            results_store,
+            run_id,
+            run_manifest,
+            resume,
+        )
+        if restored_spend is not None:
+            results_store.update_run_manifest(run_id, run_manifest)
+            write_manifest(run_manifest, output_path)
+            click.secho(
+                "[resume] restored cumulative spend: "
+                f"${restored_spend['total_spend_usd']:.6f} across "
+                f"{restored_spend['calls_charged']} prior call(s)",
+                fg="cyan",
+            )
 
     segmenter = None if cfg.data.use_semantic_data else hydra_python.detection.detic_segmenter.DeticSegmenter(cfg)
 
@@ -294,7 +386,25 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
             if should_skip_experiment(experiment_id, filename=results_filename):
                 continue
 
-            question_path = hydra_python.resolve_output_path(output_path / experiment_id)
+            if resume:
+                archived = _archive_partial_episode_dir(
+                    output_path, experiment_id
+                )
+                if archived is not None:
+                    rel_archived = str(archived.relative_to(output_path))
+                    run_manifest["resume_segments"][-1].setdefault(
+                        "archived_partial_episode_dirs", []
+                    ).append(rel_archived)
+                    results_store.update_run_manifest(run_id, run_manifest)
+                    write_manifest(run_manifest, output_path)
+                    click.secho(
+                        f"[resume] archived partial episode to {rel_archived}",
+                        fg="yellow",
+                    )
+
+            question_path = hydra_python.resolve_output_path(
+                output_path / experiment_id
+            )
             if cfg.data.use_semantic_data and not scene_has_semantics(scene_id):
                 continue
 
@@ -623,7 +733,22 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
         # must never read as a full one in the logs, so say both the
         # attempted count and exactly which pairs were skipped for
         # want of an init pose.
-        click.secho(f"[coverage] attempted {attempted} episode(s)", fg="cyan")
+        coverage_attempted = (
+            len(results_store.episodes(run_id)) if resume else attempted
+        )
+        if resume:
+            segment = run_manifest["resume_segments"][-1]
+            segment["episodes_attempted"] = int(attempted)
+            segment["total_episodes_recorded"] = int(coverage_attempted)
+            click.secho(
+                f"[coverage] resume attempted {attempted} episode(s); "
+                f"total recorded {coverage_attempted}",
+                fg="cyan",
+            )
+        else:
+            click.secho(
+                f"[coverage] attempted {attempted} episode(s)", fg="cyan"
+            )
         if uncovered_skipped:
             missing = sorted(set(uncovered_skipped))
             click.secho(
@@ -632,7 +757,9 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
                 f"no init pose: {', '.join(missing)}", fg="yellow")
         # janus c6: console scrollback is not evidence. The manifest is
         # what the paper gets written from.
-        set_coverage(run_manifest, attempted, limit, uncovered_skipped)
+        set_coverage(
+            run_manifest, coverage_attempted, limit, uncovered_skipped
+        )
         write_manifest(run_manifest, output_path)
         results_store.update_run_manifest(run_id, run_manifest)
 
@@ -648,7 +775,12 @@ def main(cfg, dataset_type: str = "spatial", skip: int = 0, max_steps: int = 25,
         # line, so without this a breached run would report no coverage
         # at all. This is the path where it matters most: someone will
         # want to know how far it got before the cap bit.
-        set_coverage(run_manifest, attempted, limit, uncovered_skipped)
+        coverage_attempted = (
+            len(results_store.episodes(run_id)) if resume else attempted
+        )
+        set_coverage(
+            run_manifest, coverage_attempted, limit, uncovered_skipped
+        )
         try:
             # Partial episode: episodes recorded so far are already in
             # SQLite; this preserves the breaching episode's calls too.
@@ -711,6 +843,11 @@ if __name__ == "__main__":
         metavar="MODEL",
         help="concrete model id recorded in the run manifest",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume an aborted run in the same output directory",
+    )
     args = parser.parse_args()
     
     dataset = args.dataset
@@ -731,4 +868,4 @@ if __name__ == "__main__":
     if args.model_name:
         cfg.vlm.name = args.model_name
     main(cfg, dataset_type=dataset, skip=args.skip, max_steps=args.max_steps,
-         limit=args.limit)
+         limit=args.limit, resume=args.resume)
