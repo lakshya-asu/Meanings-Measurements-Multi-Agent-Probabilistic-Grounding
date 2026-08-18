@@ -1,0 +1,274 @@
+\section{Experimental Results}
+\label{sec:experiments}
+
+
+\begin{table*}[t]
+\vspace{4pt}
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+
+\resizebox{\linewidth}{!}{
+\begin{tabular}{lcccccccc}
+\toprule
+\textbf{Method}
+& \textbf{$d$ Err. O-O $\downarrow$} & \textbf{$d$ Err. O-W $\downarrow$}
+& \textbf{Angle Err. $\downarrow$}
+& \textbf{Obj. Sel. $\uparrow$} & \textbf{Common Sense $\uparrow$}
+& \textbf{TSR $\uparrow$} & \textbf{Anchor Pick SR $\uparrow$} & \textbf{Avg. Traj. Len $\downarrow$} \\
+& \textbf{(\si{\meter})} & \textbf{(\si{\meter})}
+& \textbf{(\si{\degree})}
+& \textbf{(Acc.)} & \textbf{(Acc.)}
+& \textbf{(Rate)} & \textbf{(Rate)} & \textbf{(\si{\meter})} \\
+\midrule
+
+\multicolumn{9}{l}{\textbf{Open-Sourced Specialist}} \\
+\midrule
+SRGPT (SpatialRGPT-7B)  & $0.50$ & N/A    & $10.00$ & $0.36$ & N/A    & N/A    & N/A    & N/A   \\
+GraphEQA (Gemini 2.5 Pro) & N/A  & $5.82$ & $30.78$ & $0.34$ & $0.14$ & $0.78$ & $0.48$ & $1.32$ \\
+\midrule
+
+\multicolumn{9}{l}{\textbf{Ours}} \\
+\midrule
+MAPG (Gemini 3 Pro)       & $0.58$ & $\textbf{0.08}$ & $15.13$ & $0.30$ & $0.14$ & $0.46$ & $0.46$ & $14.60$ \\
+
+MAPG (OpenAI GPT 5.2)     & $0.42$ & $\textbf{0.07}$ & $\textbf{4.79}$ & $0.28$ & $0.16$ & $\textbf{0.98}$ & $\textbf{0.98}$ & $\textbf{1.30}$ \\
+
+MAPG (Gemini 2.5 Pro)     & $0.08$ & $0.45$ & $6.19$ & $\textbf{0.42}$ & $0.08$ & $0.90$ & $0.94$ & $2.50$ \\
+
+MAPG (Claude Opus 4.6) & $\textbf{0.07}$ & $0.43$ & $10.30$ & $0.36$ & $\textbf{0.30}$ & $0.806$ & $0.816$ & $4.33$ \\
+\bottomrule
+\end{tabular}
+}
+
+\caption{Comparison of MAPG against scene-graph EQA and single-image spatial-reasoning baselines on \textbf{MAPG-Bench}.
+Proprietary generalist models were benchmarked; they exhibit inconsistent performance and do not reliably produce actionable $3$D goals across tasks, so we omitted them for space (available on our website).
+Metrics with $\uparrow$ are higher-is-better; $\downarrow$ are lower-is-better.
+\textbf{Obj.\ Sel.} measures whether the predicted target object satisfies the spatial query in O-O grounding, evaluated independently of navigation success.
+\textbf{Angle Err.} is the combined directional error between the predicted and ground-truth offset directions, computed as angle $\Delta = \arccos\!\big(\cos(\text{yaw err})\cos(\text{pitch err})\big)$ over the unit sphere.
+\textbf{TSR} measures end-to-end instruction completion, including both grounding and navigation.
+\textbf{Common Sense} measures accuracy on a specialized subset probing intrinsic frame-of-reference predicates (e.g., ``in front of'' resolved using object affordance direction rather than camera direction).
+\textbf{Anchor Pick SR} measures anchor instance disambiguation under partial observability.
+\textbf{Avg.\ Traj.\ Len} measures behavioral efficiency.
+$^{\dagger}$We did not run GraphEQA with Claude Opus 4.6 due to API cost constraints; this comparison is a direction for future work.
+}
+
+% \opnote{several complaints here: 1. do not have different precision in numbers. if  something is 1.80, then write it as 1.80 and not 1.8 . All results should have two decimal places. 2. Why is MAPG Gemini pro so bad in avg traj len?? Seems like it is low on achor pick SR too- why is it worse than Gemini 2.5 pro??? Gemini 3 should be better than 2.5 right? 3. What is common sense Acc?? 4. Specify the VLM used for SRGPT and GraphEQA. 5 Why is object selection accuracy low but TSR high?}
+%tn{Common Sense is now defined in the caption above}
+\label{tab:mapg_bench}
+\end{table*}
+
+% \opnote{this section need not be separate, and you can talk about your experimental setup along with the results, but it is also okay to keep if you have space.}
+%\opnote{This section can be organized better- for example: each paragraph can say a separate thing- one for metrics, one for what you're trying to evaluate, one for baselines etc. Bold the first word of each para that is representative of what the para is trying to say. for example: \textbf{Baselines.} We report results on ...}
+\textbf{Task.} We evaluate \emph{goal grounding} under a common requirement: given a spatial query, egocentric observations, and a persistent $3$D scene representation (scene graph), the system must output a grounded target that is directly usable by a planner. Depending on the query type, the output is either (i) an \emph{allocentric waypoint} for object-to-world (O-W, \emph{``Where''}) queries or (ii) an \emph{object selection} for object-to-object (O-O) queries. %\opnote{write the shorthand you use O-W or O-O in your tables}
+Our evaluation isolates whether a method can (a) resolve the intended anchor under ambiguity, (b) interpret predicates in a consistent frame of reference, and (c) satisfy explicit metric constraints, while remaining robust under viewpoint changes and partial observability. 
+
+
+
+\textbf{Metrics.} On MAPG-Bench we report both geometric error and task-level success. We measure distance error for O-O and O-W grounding (meters) and yaw/pitch angular error (degrees) to quantify directional consistency of the predicted offset. For O-O cases, we report object-selection accuracy using embedding-based soft matching between predicted and ground-truth object names to account for label-space mismatches between HM$3$D annotations and Hydra-derived semantic classes; MAPG is scored using the best match over its ranked Top-1/Top-2 predictions. For embodied efficiency, we report TSR, anchor-pick success rate (instance disambiguation under partial observability), and average trajectory length (meters).
+%We report mean $\pm$ SEM (standard error of the mean, $\sigma / \sqrt{n}$) across queries. \opnote{I'm sus about the yaw pitch degrees- have you seen other papers do that?} %\opnote{I don't understand this- what is identification style cases? is this O-O or O-W?} %\opnote{Not sure what this means}
+
+\textbf{Baselines.} We compare MAPG against scene-graph EQA (GraphEQA) and single-image spatial specialists (SpatialRGPT). We modified GraphEQA's planner interface to answer spatial ``where'' questions by producing a text waypoint from the scene graph, yielding a fair scene-graph-driven baseline for metric-semantic grounding. We evaluate multiple MAPG variants that share the same distributional grounding pipeline but differ only in the underlying VLM backend, isolating the effect of model choice from pipeline structure.
+
+\textbf{Completed end-to-end run.}
+The completed evaluation used the Claude Opus 4.6 planner model, seed $42$, the \texttt{bench\_v1\_98} split, and llvmpipe software rendering with \texttt{sim\_gpu=-1}. All $98$ episodes completed. MAPG succeeded on $79$ episodes ($80.6\%$), and the anchor was found on $80$ ($81.6\%$). Mean steps and mean trajectory length were both $4.33$. The run made $830$ model calls, including $142$ retries, all of which were flagged; every call had a usage row, and total spend was \$15.780490 against a \$25 cap.
+During the run, an out-of-range Habitat semantic instance ID stopped question index $95$; commit \texttt{c1b1ee5e} sanitized only out-of-range IDs, and the same run was resumed in place rather than restarted after validating the seed, split, and configuration hashes.
+
+\begin{table*}[t]
+\centering
+\small
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Predicate} & \textbf{$n$} & \textbf{Success} \\
+\midrule
+above       & 10 & 9 ($90.0\%$) \\
+behind      & 13 & 10 ($76.9\%$) \\
+below       & 4  & 1 ($25.0\%$) \\
+between     & 6  & 3 ($50.0\%$) \\
+from        & 1  & 1 ($100\%$) \\
+in front of & 33 & 27 ($81.8\%$) \\
+left of     & 11 & 10 ($90.9\%$) \\
+near        & 1  & 1 ($100\%$) \\
+right of    & 18 & 16 ($88.9\%$) \\
+towards     & 1  & 1 ($100\%$) \\
+\bottomrule
+\end{tabular}
+\caption{Success in the completed run, grouped by predicate.}
+\label{tab:predicate_success}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Target distance} & \textbf{$n$} & \textbf{Success} \\
+\midrule
+$0\,\mathrm{m}$   & 6  & 3 ($50.0\%$) \\
+$0.5\,\mathrm{m}$ & 19 & 14 ($73.7\%$) \\
+$1\,\mathrm{m}$   & 34 & 28 ($82.4\%$) \\
+$1.2\,\mathrm{m}$ & 1  & 1 ($100\%$) \\
+$1.5\,\mathrm{m}$ & 12 & 10 ($83.3\%$) \\
+$2\,\mathrm{m}$   & 20 & 18 ($90.0\%$) \\
+$2.5\,\mathrm{m}$ & 3  & 3 ($100\%$) \\
+$3\,\mathrm{m}$   & 1  & 1 ($100\%$) \\
+$4\,\mathrm{m}$   & 2  & 1 ($50.0\%$) \\
+\bottomrule
+\end{tabular}
+\caption{Success in the completed run, grouped by target distance.}
+\label{tab:distance_success}
+\end{minipage}
+
+\vspace{3pt}
+\parbox{\textwidth}{\footnotesize\textbf{Interpretation.}
+Tables~\ref{tab:predicate_success} and~\ref{tab:distance_success} are descriptive breakdowns of one split. \texttt{below} has $1$ success in $4$ examples ($25.0\%$), and \texttt{between} has $3$ in $6$ ($50.0\%$). These cells are hypotheses for follow-up, not stable conclusions. Several predicate and distance cells contain only one to three examples, so their percentages should not be generalized.}
+\end{table*}
+
+\textbf{Rendering fallback disclosure.}
+The original run log contains $35$ black-render fallback markers affecting split indices $14$, $38$, and $39$. When every sampled image in an affected camera batch was filtered as black, the system used the final unfiltered raw image. Two of the three affected episodes succeeded. Excluding all three gives $77$ successes in $95$ episodes ($81.1\%$), compared with $79$ in $98$ ($80.6\%$) for the full result. This sensitivity check does not show that the fallback caused or prevented any outcome.
+
+\noindent A) \textbf{MAPG-Bench results:}
+% \opnote{Don’t start with the entre- remind the reader what the benchmark evaluates and what grounding skills are needed to do well in it. Start by talking about O-O results cause similar problems already exist in other benchmarks (ignore if irrelevant)? Talk about results on sub components fromt he table- why is anchor selection accuracy low of graphEQA? Then come to the main result.}
+MAPG-Bench evaluates three grounding skills jointly: anchor instance disambiguation (Anchor Pick SR), predicate interpretation in a consistent allocentric frame (yaw/pitch error), and metric constraint satisfaction (O-W error). Table~\ref{tab:mapg_bench} reports quantitative performance. To illustrate the contrast, consider the query ``Where is $2\,\mathrm{m}$ to the right of the fridge?’’ GraphEQA selects the scene-graph node with the nearest bounding box satisfying the directional predicate, without enforcing the metric offset; the resulting waypoint is $5.82\,\mathrm{m}$ from the ground truth. MAPG’s Orchestrator extracts \{anchor: \texttt{fridge}, predicate: \texttt{right-of}, metric: $2.0\,\mathrm{m}$\}; the Grounding Agent resolves the fridge instance from the scene graph; the Spatial Kernel Estimator instantiates a vMF directional kernel ($\theta_0 = 90^\circ$ in the fridge’s local frame) and a radial Gaussian metric kernel ($d_0 = 2.0\,\mathrm{m}$, $\sigma_m = 0.30\,\mathrm{m}$); the composed distribution peaks $2.04\,\mathrm{m}$ to the right of the fridge, yielding a waypoint $0.07\,\mathrm{m}$ from the ground truth (see Fig.~\ref{fig:fridge_kernels_row}).
+
+GraphEQA exhibits a large O-W distance error ($5.82\,\mathrm{m}$) and high angular inconsistency ($13.50^\circ$ yaw, $27.90^\circ$ pitch), reflecting its tendency to select the nearest region satisfying a predicate without enforcing the metric offset. Its Anchor Pick SR ($0.48$) is also substantially lower than MAPG’s best ($0.98$), showing that committing early to a single scene-graph query under partial observability misses the correct instance roughly half the time \opnote{what does this mean?}. MAPG (OpenAI GPT-5.2) reduces O-W error from $5.82\,\mathrm{m}$ to $0.07\,\mathrm{m}$ (98.8\% reduction, SEM $0.03\,\mathrm{m}$), yaw error from $13.50^\circ$ to $1.90^\circ$ (85.9\% reduction), and pitch error from $27.90^\circ$ to $4.40^\circ$ (84.2\% reduction), while achieving $0.98$ TSR and $0.98$ anchor-pick SR with short trajectories ($1.30\,\mathrm{m}$). These gains follow directly from MAPG’s two design novelties: (i) explicit query decomposition (anchor / predicate / metric) and (ii) probabilistic composition of per-clause kernels into a planner-queryable goal distribution. \opnote{you need to say how/why it follows from those decisions.}
+%\opnote{IMP: Add an example of a query where MAPG does better than the baseline and talk about where the baseline examtly fails- the failure mode of the baseline and why MAPG succeeds.}
+
+On O-O grounding, SpatialRGPT achieves $0.50\,\mathrm{m}$ error, consistent with its ability to reason about directional relations from a single image. However, when the target object is not visible in the best single view or requires integrating evidence across multiple viewpoints, SRGPT has no mechanism to resolve the discrepancy. MAPG (Claude Opus 4.6) reaches $0.07\,\mathrm{m}$ O-O error (86\% reduction vs SRGPT), because the Grounding Agent accumulates multi-view evidence before committing to the anchor instance, and the Spatial Kernel Estimator composes a $3$D belief anchored to the resolved object pose rather than a single-frame estimate \opnote{I don't understand this}. 
+% \opnote{perhaps start with this paragraph. IMP: Also you need to be more detailed here- give an example where SRGPT fails and you succeed. You need to better explain why your method succeeds- your explanation does not talk about why your method is better, and that is important.}
+
+This trade-off reflects the different demands of each task type: O-O grounding is primarily a disambiguation problem requiring accurate semantic matching and visual evidence accumulation across views, where Claude Opus 4.6’s strong CLIP-based referent resolution yields the lowest O-O error ($0.07\,\mathrm{m}$). O-W grounding additionally requires predicting precise metric offset parameters $(d_0, \sigma_m)$ from a spatial predicate, where GPT-5.2’s superior instruction-following on structured spatial prompts produces better-calibrated metric kernels and the lowest O-W error ($0.07\,\mathrm{m}$). \opnote{I also don't understand this.}
+% \opnote{Why? You cannot get away with simply saying this- you need to justify why this is happening}
+MAPG (Gemini 3 Pro) exhibits higher trajectory length and lower anchor-pick SR than MAPG (Gemini 2.5 Pro), consistent with Gemini 3 Pro being a preview checkpoint with weaker instruction-following on structured spatial prompts; we retain it for completeness \opnote{this is not a valid argument}. The overall pattern persists across all MAPG variants: low metric error and improved directional consistency versus the scene-graph baseline, validating that the \emph{pipeline structure} (decomposition + composition) is the primary driver of spatial grounding performance. 
+% \opnote{the reason for performance improvement is not clear through your explanations, and adding actual examples and failure modes of the baselines will help a lot.}
+
+\noindent B) \textbf{HM-EQA Results (Generality without metric constraints):} 
+% \opnote{This needs to be separate subsection, and you need to write this as- our method also results in improved or equivalent performance on existing EQA benchmarks that do not necessarily involve metric constraints, highlighting its generality and broad applicability.}
+To assess whether MAPG's metric-semantic decomposition degrades performance on tasks without metric constraints, we evaluate on HM-EQA~\cite{ren2024exploreconfidentefficientexploration}, a semantic QA benchmark over HM3D scenes introduced by Explore-EQA where success is measured by multiple-choice answer accuracy over object properties and states complementary to MAPG-Bench's continuous goal-grounding evaluation. 
+% \opnote{This cannot be the description of the benchmark. What is it designed to measure and how it is different from our MAPG benchmark? How it calculate success doe not merit a mention here.} 
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.03}
+
+\begin{tabular}{p{4.8cm}cc}
+\toprule
+\multicolumn{3}{c}{\textbf{Benchmarking on HM-EQA Question Answering}} \\
+\midrule
+\textbf{Method} & \textbf{TSR $\uparrow$} & \textbf{$L_{\tau}$ (\si{\m}) $\downarrow$} \\
+\midrule
+
+Explore-EQA & $0.52$ & $38.1$ \\
+Explore-EQA-GPT4o & $0.46$ & $6.3$ \\
+Explore-EQA-Llama4-Mav & $0.44$ & $10.4$ \\
+Explore-EQA-Gemini-2.5Pro & $0.54$ & $12.3$ \\
+GraphEQA-Gemini-2.5Pro & $\textbf{0.67}$ & $7.41$ \\
+GraphEQA (Gemini 2.5 Pro)$^{+}$ & $0.61$ & $5.48$ \\
+GraphEQA (GPT 5.2)$^{+}$ & $0.63$ & N/A \\
+MAPG (OpenAI GPT 5.2) (Ours) & $0.60$ & N/A \\
+MAPG (Claude 4.6 Opus) (Ours) & $\textbf{0.71}$ & $6.62$ \\
+\bottomrule
+\end{tabular}
+\caption{EQA question-answering accuracy on HM-EQA~\cite{ren2024exploreconfidentefficientexploration}. $^{+}$ indicates our implementation of the particular baseline. MAPG achieves higher TSR while carrying out more exploration before committing to the target, consistent with its evidence-accumulation design. A GraphEQA + Claude Opus 4.6 comparison was omitted due to API cost constraints and is a direction for future work. %\opnote{Why have you not baselined graph eqa with claude also? How do you know your performance is not simply due to a stronger MLLM/VLM backend?}
+\opnote{this reasoning is not acceptable.}
+}
+\label{tab:eqa_qa_accuracy}
+\end{table}
+
+Table~\ref{tab:eqa_qa_accuracy} reports QA accuracy. Our method achieves improved or equivalent performance on HM-EQA, highlighting its generality and broad applicability even when metric constraints are absent. MAPG (Claude Opus 4.6) reaches $0.71$ TSR, outperforming GraphEQA-Gemini-2.5Pro ($0.67$) and all Explore-EQA variants ($0.44$--$0.54$). This indicates that MAPG's evidence-accumulation loop and anchor disambiguation, when decoupled from metric kernel prediction, transfer effectively to semantic QA tasks. We use HM-EQA as a complementary diagnostic, while MAPG-Bench remains our primary evaluation for metric-semantic goal grounding.
+
+\noindent C) \textbf{Ablations:}
+% \label{subsec:ablations_results}
+We ablate MAPG to quantify why explicit spatial reasoning and modular agents are necessary. Table~\ref{tab:ablations_spatial} shows that removing the explicit spatial reasoner (replacing it with a single ``fat'' planner with curated chain-of-thought) drops object selection SR from $0.42$ to $0.20$ over the full $n=98$ benchmark (Fisher exact $p<10^{-3}$), while the full MAPG configuration improves over the GraphEQA base ($0.34$ to $0.42$). These results support the claim that \emph{explicit composition of metric and predicate constraints} is not recoverable from prompting alone, consistent with the running fridge example, where CoT-only reasoning misses the $2\,\mathrm{m}$ offset entirely. %\opnote{add an example failure- like refer to objects- or have a running example through the paper.}
+
+We further evaluate robustness under uncertainty induced by occlusion. In Table~\ref{tab:ablations_occlusion}, the explicit spatial reasoner improves object selection SR from $0.30$ to $0.50$ under occlusion, suggesting that maintaining intermediate belief over anchors and deferring commitment can recover from partial observability when the anchor eventually enters the map. We report this as a qualitative indication rather than a statistical result: the occlusion subset contains only $n=10$ queries over $5$ scenes, so the difference amounts to two queries (Fisher exact $p=0.65$) and is not significant. Enlarging this subset is ongoing work.
+
+The commonsense-focused subset probes frame-of-reference predicates where the correct interpretation requires reasoning about intrinsic object orientation (e.g., the ``front’’ of a chair is the side facing a seated occupant, not the camera’s front). On this subset (Table~\ref{tab:mapg_bench}, Common Sense column), MAPG (Claude Opus 4.6) achieves $0.30$ accuracy, more than doubling the GraphEQA baseline ($0.14$). This gain reflects MAPG’s explicit predicate decomposition: rather than asking a single model to jointly resolve the referent and interpret the predicate, MAPG’s Grounding Agent first resolves the anchor instance and the Spatial Kernel Estimator separately reasons about the directional predicate in the anchor’s local frame. The remaining gap from perfect accuracy reflects the difficulty of intrinsic object-orientation inference from partial views, a target for future work in richer scene representations. 
+\opnote{para not clear.} 
+%\opnote{this whole paragraph is bad news. One you cannot talk about abstract things without making the reader understand what youa re talking about with at elast a few concrete examples. Two- I see in table 1 that we do equal or better than the baselines? 3 the conclusion you have derived here does not help your case at all.}
+
+\noindent D) \textbf{Real-World Demonstration:} %\opnote{Not sure what you are talking about here- you need to provide more details for everything- what was the task, what was the query- what did the robot do etc. I'm not saying you eat away many lines of this section- but add details in a dense manner. One line with all the details should do, or at least write please see figure 6 for task and query details}
+Using a Robotis AI Worker robot, we built an offline $3$D scene graph from RGB-D observations of a physical lab environment and evaluated MAPG on three spatial queries, including ``Where is $1\,\mathrm{m}$ to the right of the trash can near the bicycle?'' MAPG resolved the correct anchor instance amid distractors, composed a spatial distribution peaking at the annotated target region (see Fig.~\ref{fig:obs-anchor-trace}), and produced a planner-ready waypoint within the expected tolerance. These results indicate that MAPG transfers to physical environments when a structured scene representation is available, though systematic real-world benchmarking is deferred to future work. A video of the demonstration is provided in the supplementary material.
+
+\begin{table}[t]
+\centering
+
+\renewcommand{\arraystretch}{1.1}
+\setlength{\tabcolsep}{6pt}
+
+
+\begin{tabular}{l c}
+\toprule
+% \multicolumn{2}{c}{\textbf{Ablation Spatial reasoner}} \\
+% \midrule
+\textbf{Method} & \textbf{Object selection SR $\uparrow$} \\
+\midrule
+GraphEQA (base)                          & $0.34$ \\
+MAPG (CoT w/o spatial reasoner)            & $0.20$ \\
+MAPG (explicit spatial reasoner)         & $0.42$ \\
+\bottomrule
+\end{tabular}
+
+
+\caption{Replacing the explicit spatial reasoner with CoT degrades object selection success rate, while the full MAPG variant achieves the best performance. }
+\label{tab:ablations_spatial}
+\end{table}
+
+
+
+
+\begin{table}[t]
+\centering
+
+\renewcommand{\arraystretch}{1.1}
+\setlength{\tabcolsep}{6pt}
+
+
+\begin{tabular}{l c}
+\toprule
+% \multicolumn{2}{c}{\textbf{Ablations: Occlusion (MAPG)}} \\
+% \midrule
+\textbf{Method} & \textbf{Object selection SR $\uparrow$} \\
+\midrule
+GraphEQA (base)                          & $0.30$ \\
+MAPG (CoT- w/o spatial reasoner)            & $0.30$ \\
+MAPG (explicit spatial reasoner)         & $0.50$ \\
+\bottomrule
+\end{tabular}
+
+
+\caption{Occlusion highlights the limits of CoT-only reasoning, while the full MAPG variant performs best.}
+\label{tab:ablations_occlusion}
+\end{table}
+
+
+
+
+
+
+% \begin{table}[t]
+% \centering
+% \renewcommand{\arraystretch}{\tblstretch}
+% \setlength{\tabcolsep}{6pt}
+
+% \begin{tabular}{l c}
+% \toprule
+% \multicolumn{2}{c}{\textbf{Ablation: Commonsense (MAPG)}} \\
+% \midrule
+% \textbf{Method} & \textbf{Commonsense object selection SR $\uparrow$} \\
+% \midrule
+% GraphEQA (base)                  & $0.30$ \\
+% MAPG (OpenAI GPT-5.2) (Ours)     & $0.40$ \\
+% MAPG (Gemini 2.5 Pro) (Ours)     & $0.30$ \\
+% MAPG (Claude 4.6 Opus) (Ours)    & $0.60$ \\
+% \bottomrule
+% \end{tabular}
+
+
+% \caption{Commonsense-focused object selection success rate (SR). Higher is better.}
+% \label{tab:ablations_commonsense}
+% \end{table}

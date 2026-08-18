@@ -1,0 +1,163 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%2345678901234567890123456789012345678901234567890123456789012345678901234567890
+%        1         2         3         4         5         6         7         8
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out if you need a4paper
+
+%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4 paper
+\usepackage{times}
+\usepackage[dvipsnames,table]{xcolor}
+\usepackage{multicol}
+\usepackage[bookmarks=true]{hyperref}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{amsmath}
+\usepackage[normalem]{ulem}
+\usepackage{subcaption}
+\usepackage{amssymb}
+\usepackage{booktabs} % For professional looking tables (\toprule, \midrule)
+\usepackage{multirow} % To combine rows for the Task Suites
+\usepackage{tcolorbox}
+\usepackage{siunitx}
+
+\usepackage{booktabs}
+\usepackage{caption}
+%\usepackage{enumitem}
+
+\usepackage[normalem]{ulem}
+
+% first-column class colors
+\definecolor{clsGeneralist}{RGB}{229,245,224} % light green
+\definecolor{clsSpecialist}{RGB}{253,233,232} % light pink/red
+\definecolor{clsOurs}{RGB}{232,240,255}       % light blue
+\definecolor{clsPropGen}{RGB}{236,231,255}    % light  purple
+\definecolor{bestCell}{RGB}{255,244,204}      % light yellow (best model)
+
+% caption background (optional)
+\definecolor{capbg}{gray}{0.93}
+\DeclareCaptionFormat{colorbox}{
+  \colorbox{capbg}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{#1#2#3}}
+}
+\captionsetup[table]{format=colorbox,labelfont=bf}
+
+% tiny legend swatch
+\newcommand{\swatch}[1]{\begingroup\setlength{\fboxsep}{1.2pt}\colorbox{#1}{\strut\hspace{0.9em}}\endgroup}
+
+% Pick colors that match the highlights you’ll add in the figure
+\definecolor{envCol}{RGB}{255,236,214}    % environment (orange-ish)
+\definecolor{agentCol}{RGB}{232,240,255}  % agentic layer (blue-ish)
+\definecolor{compCol}{RGB}{229,245,224}   % composition (green-ish)
+\definecolor{metricCol}{RGB}{236,231,255} % metric kernel (purple-ish)
+\definecolor{spatialCol}{RGB}{253,233,232}% spatial kernel (pink-ish)
+
+
+\newcommand{\cA}[1]{\textcolor{envCol}{#1}}
+\newcommand{\cB}[1]{\textcolor{agentCol}{#1}}
+\newcommand{\cC}[1]{\textcolor{compCol}{#1}}
+
+    
+\newif\ifcomments
+\commentstrue   % show comments
+%\commentsfalse % hide comments
+
+% The clean build mode defines \SUBMISSION, which force-hides every co-author
+% note. Use the build script when notes must be hidden so they cannot leak.
+\ifdefined\SUBMISSION\commentsfalse\fi
+
+% Revision markup: \rev{...} wraps changed text.
+% Set \revhlfalse when revisions should typeset as ordinary black text.
+\newif\ifrevhl
+\revhlfalse      % revisions typeset plain
+%\revhltrue     % revisions highlighted for co-authors
+\newcommand{\rev}[1]{\ifrevhl\textcolor{BrickRed}{#1}\else#1\fi}
+
+% \newcommand{\opnote}[1]{\textcolor{blue}{#1}}
+\newcommand{\opnote}[1]{\ifcomments\textcolor{blue}{#1}\fi}
+\newcommand{\ngnote}[1]{\ifcomments\textcolor{olive}{#1}\fi}
+\newcommand{\tn}[1]{\ifcomments\textcolor{teal}{#1}\fi}
+\newcommand{\ljnote}[1]{\ifcomments\textcolor{cyan}{#1}\fi}
+\newcommand{\spnote}[1]{\ifcomments\textcolor{green}{#1}\fi}
+\IEEEoverridecommandlockouts                              % This command is only needed if 
+                                                          % you want to use the \thanks command
+
+\overrideIEEEmargins                                      % Needed to meet printer requirements.
+
+%In case you encounter the following error:
+%Error 1010 The PDF file may be corrupt (unable to open PDF file) OR
+%Error 1000 An error occurred while parsing a contents stream. Unable to analyze the PDF file.
+%This is a known problem with pdfLaTeX conversion filter. The file cannot be opened with acrobat reader
+%Please use one of the alternatives below to circumvent this error by uncommenting one or the other
+%\pdfobjcompresslevel=0
+%\pdfminorversion=4
+
+% See the \addtolength command later in the file to balance the column lengths
+% on the last page of the document
+
+% The following packages can be found on http:\\www.ctan.org
+%\usepackage{graphics} % for pdf, bitmapped graphics files
+%\usepackage{epsfig} % for postscript graphics files
+%\usepackage{mathptmx} % assumes new font selection scheme installed
+%\usepackage{times} % assumes new font selection scheme installed
+%\usepackage{amsmath} % assumes amsmath package installed
+%\usepackage{amssymb}  % assumes amsmath package installed
+
+\title{\LARGE \bf
+Meanings and Measurements: Multi-Agent Probabilistic Grounding for Vision-Language Navigation
+}
+
+\author{
+\begin{tabular}{c}
+Swagat Padhan$^{*,1}$, Lakshya Jain$^{*,1}$, Bhavya Minesh Shah$^{1}$, Omkar Patil$^{1}$, Thao Nguyen$^{2}$, Nakul Gopalan$^{1}$ \\[4pt]
+$^{1}$Arizona State University \qquad $^{2}$Haverford College \\[2pt]
+{\footnotesize \texttt{\{spadhan, ljain6, bshah43, opatil3, ngopalan\}@asu.edu, tnguyen3@haverford.edu}}
+\end{tabular}
+}
+
+
+
+\begin{document}
+
+
+
+\maketitle
+\begin{figure}[b]
+\vspace{-10pt}
+\begin{tcolorbox}[
+  colback=white,
+  colframe=black,
+  boxrule=0.3pt,
+  arc=0pt,
+  left=4pt, right=4pt, top=3pt, bottom=3pt,
+  fontupper=\footnotesize
+]
+$^{*}$Equal contribution. This work was partly funded by TSMC and Arizona State University.
+\end{tcolorbox}
+\end{figure}
+\thispagestyle{empty}
+\pagestyle{empty}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+
+%\opnote{I have added a lot of comments here- once you are done addressing a specific comment, 'comment' it out and don't delete it completely so that I can keep a track.}
+\rev{Robots collaborating with humans must convert natural language goals into actionable, physically grounded decisions. Executing ``go two meters to the right of the fridge'' requires simultaneously resolving a semantic referent, interpreting a spatial predicate in a geometrically consistent frame, and enforcing an exact metric offset in $3$D space. We show empirically that existing VLM-based systems struggle with this joint requirement: scene-graph EQA approaches commit to a single target without metric enforcement, while single-image spatial specialists produce no actionable allocentric goals. To address this, we propose MAPG (Multi-Agent Probabilistic Grounding), a framework that treats metric-semantic goal grounding as compositional inference over $3$D space. MAPG decomposes a query into structured clauses, resolves referents via multi-view evidence accumulation against an online $3$D scene graph, and instantiates three analytic kernels per clause (semantic, metric, and directional) whose parameters are predicted by specialist VLMs. Kernels compose via a Product of Experts (log-space addition) into a continuous goal distribution $P(x)$ over free navigable space, directly consumable by a motion planner.} 
+% \opnote{don't name the benchmark here, and what does it represent? Are you trying to say that your method leads to good performance even when metric component is absent from the query? The state it that way.} %\opnote{describe the baselines- like EQA baselines}
+We introduce MAPG-Bench ($98$ queries, $41$ HM$3$D scenes), the first benchmark targeting metric-semantic goal grounding, and evaluate on existing embodied QA benchmarks to show competitive performance even when metric constraints are absent. In a completed end-to-end MAPG-Bench run, MAPG succeeds on $79$ of $98$ queries ($80.6\%$) and finds the anchor on $80$ ($81.6\%$). Separate component evaluation reduces object-to-world grounding error from $5.82\,\mathrm{m}$ to $0.07\,\mathrm{m}$ ($98.8\%$). %\opnote{by how much}
+A real-world robot demonstration illustrates the approach outside simulation when a structured scene representation is available.
+\end{abstract}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\input{introduction}
+\input{background}
+\input{method}
+\input{datasets}
+\input{experiments}
+\input{observations}
+\input{conclusion}
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}

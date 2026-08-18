@@ -1,0 +1,9 @@
+# LaTeX intermediates. The PDF is tracked, the scratch is not.
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.synctex.gz
+missfont.log
