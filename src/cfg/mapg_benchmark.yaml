@@ -19,6 +19,47 @@ model_pins:
   gpt-5.2-chat-latest: ''
   qwen3-vl-plus: ''
 
+# MAPG-11 cost governor: hard per-run USD caps per provider plus a
+# total. Any breach marks the run aborted in the store, writes the
+# breach detail into the manifest, and exits nonzero. Adjust caps per
+# launch; the weekly budget envelope is $500 across the core matrix.
+cost_caps:
+  claude: 25.0
+  openai: 25.0
+  gemini: 25.0
+  qwen: 25.0
+  total: 80.0
+
+# Pinned model prices in USD per million tokens (input/output).
+# Empty values are placeholders to be filled before any LLM run, same
+# contract as model_pins: a run must fail loudly if a governed model
+# has no pinned price, because unpriceable spend cannot be governed.
+# Preflight enforces this (check h). Keys match by exact model name or
+# by boundary prefix, so a snapshot id resolves to its base row.
+model_prices:
+  claude-opus-4-6:
+    input: ''
+    output: ''
+  gpt-5.2-chat-latest:
+    input: ''
+    output: ''
+  gemini-2.5-pro:
+    input: ''
+    output: ''
+  gemini-3-pro-preview:
+    input: ''
+    output: ''
+  qwen3-vl-plus:
+    input: ''
+    output: ''
+
+# Conservative per-call token estimate for calls whose provider did
+# not expose token counts. Such spend is charged against the caps and
+# also tracked separately as estimated spend.
+fallback_tokens_per_call:
+  prompt: 6000
+  completion: 400
+
 data:
   # Frozen split CSV, repo relative. Resolved through src/paths.py
   # (resolve_data_path), which maps relative paths onto the repo root.
@@ -68,6 +109,12 @@ vlm:
   early_exit: True
   add_history: False
   answer_mode: "msp_point"
+
+  # MAPG-09: agent implementation. "unified" (default) = src/agents
+  # stack, one prompt per role shared byte-identically across backends,
+  # typed outputs, real per-call token usage. "legacy" = the historical
+  # per-backend agent classes.
+  agents_impl: "unified"
 
   # >>> MSP No-BNN final config
   msp_nobnn:

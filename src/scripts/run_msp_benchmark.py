@@ -38,6 +38,8 @@ from src.planners.vlm_planner_msp import VLMPlannerMSP_Smart
 # Gate 4 results store: SQLite rows + run manifest (legacy JSON stays).
 from src.results.store import ResultsStore
 from src.results.manifest import build_manifest, write_manifest
+# MAPG-11: hard per-provider cost caps; breach aborts the run.
+from src.results.governor import CostGovernor, CostCapExceeded
 from src.schema.prediction import normalize_prediction
 from src.evals.decomposition import decompose_episode
 from src.evals.success import score_episode
@@ -167,6 +169,18 @@ def main(cfg):
     write_manifest(run_manifest, output_path)
     run_status = "aborted"
 
+    # MAPG-11: cost governor. Spend accrues from the planner CallLog;
+    # any cost_caps breach raises CostCapExceeded (handled below:
+    # aborted run, breach in manifest, nonzero exit). from_cfg fails
+    # loudly at run start if caps exist but prices are unusable.
+    cost_governor = CostGovernor.from_cfg(cfg)
+    if cost_governor is None:
+        click.secho(
+            "[cost-governor] cfg has no cost_caps: LLM spend is UNGOVERNED. "
+            "Benchmark cfgs must define cost_caps (preflight check h).",
+            fg="red",
+        )
+
     # Segmenter init (Detic or GT)
     segmenter = None if cfg.data.use_semantic_data else hydra_python.detection.detic_segmenter.DeticSegmenter(cfg)
 
@@ -189,6 +203,10 @@ def main(cfg):
 
     try:
         for question_ind in tqdm(range(len(questions_data))):
+            # MAPG-11: refuse to start another episode once any cap is
+            # already breached.
+            if cost_governor is not None:
+                cost_governor.check_caps()
             q = questions_data[question_ind]
             scene, floor = q["scene"], str(q["floor"])
             scene_id = scene[6:]
@@ -285,6 +303,9 @@ def main(cfg):
                 if q.get("ann_yaw_rad", None) not in [None, ""]
                 else None,
             )
+            # MAPG-11: watch this episode's CallLog for spend accrual.
+            if cost_governor is not None:
+                cost_governor.track(vlm_planner.call_log)
 
             # Episode metrics
             succ = False
@@ -307,6 +328,10 @@ def main(cfg):
                 # CallLog (kernel + selector on a full step, 0 on
                 # anchor-missing steps), not an assumed 1 per step.
                 ep_vlm_calls = vlm_planner.call_log.total()
+                # MAPG-11: price this step batch's new calls and stop
+                # hard on any cap breach.
+                if cost_governor is not None:
+                    cost_governor.charge_tracked()
 
                 # "answer" is decided inside the planner; if it claims confident, stop.
                 if is_conf or (conf > 0.9 and extra.get("action_type") == "answer"):
@@ -615,6 +640,26 @@ def main(cfg):
 
         # Gate 4: the loop finished without crashing.
         run_status = "complete"
+
+    except CostCapExceeded as exc:
+        # MAPG-11: hard cost cap breach. Record the breach detail in
+        # the manifest (file and store copy), flush the in-progress
+        # episode's call rows, and re-raise so the process exits
+        # nonzero. run_status stays "aborted" for the finally block.
+        click.secho(f"[cost-governor] {exc}", fg="red")
+        run_manifest["aborted_reason"] = "cost_cap_exceeded"
+        run_manifest["cost_cap_breach"] = exc.detail()
+        try:
+            # Partial episode: episodes recorded so far are already in
+            # SQLite; this preserves the breaching episode's calls too.
+            results_store.record_calls(
+                run_id, experiment_id, vlm_planner.call_log.rows()
+            )
+        except Exception:
+            pass  # breach can hit before the first planner exists
+        results_store.start_run(run_manifest)  # refresh stored manifest
+        write_manifest(run_manifest, output_path)
+        raise
 
     finally:
         # Gate 4: close out the run record with its final status.

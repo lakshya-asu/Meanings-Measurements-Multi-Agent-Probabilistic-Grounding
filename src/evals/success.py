@@ -34,6 +34,13 @@ GT column convention (reused, not invented):
   ann_pos == anchor_center within EPS the direction is undefined and,
   exactly like offset_metric.py with metric_corrected_ok=False, the
   point degenerates to the anchor center).
+- Zero-distance rows (distance_m == 0) are the between-style queries
+  whose answer IS the annotated point, not an offset from an anchor.
+  For those the scoring GT is ann_pos. This is Lakshya decision D5
+  (2026-08-16, option b) and it takes priority over both the derived
+  metric_corrected_* columns and the offset formula, because the
+  offline offset tool degenerates a zero-distance row to the anchor
+  center, which is the wrong target for a between query.
 
 Stdlib + math only: no numpy, no pandas, importable anywhere including
 inside the Habitat docker image. Inputs may be lists, tuples, or numpy
@@ -140,6 +147,11 @@ def gt_xyz_from_row(gt_row: Dict[str, Any]) -> Optional[List[float]]:
     """Extract the GT target point from a bench CSV row dict.
 
     Column convention, in priority order (see module docstring):
+    0. distance_m == 0 with ann_pos_x/y/z present: the GT is ann_pos
+       itself (decision D5, between-style queries). Checked first, so
+       a stale metric_corrected_* column derived by the offset tool
+       (which degenerates such a row to the anchor center) cannot
+       override the annotated point.
     1. metric_corrected_x/y/z: the exact columns
        eval_offset_distances.py reads today (derived offline by
        src/tools/offset_metric.py).
@@ -153,13 +165,18 @@ def gt_xyz_from_row(gt_row: Dict[str, Any]) -> Optional[List[float]]:
        False; none exist in the frozen bench split).
     3. Neither available: return None (episode cannot be GT-scored).
     """
+    d = _row_float(gt_row, "distance_m")
+    ann = _row_vec3(gt_row, "ann_pos")
+    if d is not None and abs(d) <= EPS and ann is not None:
+        # D5: zero-distance (between-style) rows score against the
+        # annotated point, never against the anchor center.
+        return [ann[0], ann[1], ann[2]]
+
     mc = _row_vec3(gt_row, "metric_corrected")
     if mc is not None:
         return mc
 
     anchor = _row_vec3(gt_row, "anchor_center")
-    ann = _row_vec3(gt_row, "ann_pos")
-    d = _row_float(gt_row, "distance_m")
     if anchor is None or ann is None or d is None:
         return None
 

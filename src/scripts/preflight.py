@@ -20,6 +20,9 @@ Checks:
   (f) every model alias the cfg uses has a non-empty pin in model_pins
   (g) numpy / habitat_sim importability (FAIL inside the container,
       INFO outside)
+  (h) cost governor (MAPG-11): cost_caps present with a cap for every
+      enabled provider plus 'total', and model_prices pins usable
+      $/Mtok rows for the capped models
 
 Dependencies: stdlib. Uses OmegaConf or PyYAML for the cfg if available
 and python-dotenv for .env if available; degrades to manual parsing.
@@ -34,6 +37,7 @@ import sys
 from pathlib import Path
 
 from src.paths import REPO_ROOT, resolve_data_path
+from src.results.governor import normalize_price_row, provider_of, resolve_price_key
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -173,6 +177,75 @@ def missing_env_backends(aliases, env) -> list:
         if not any(str(env.get(k, "")).strip() for k in keys):
             missing.append((backend, keys))
     return missing
+
+
+# Preflight backend prefixes -> cost governor provider cap keys.
+_BACKEND_TO_PROVIDER = {"gpt": "openai", "google": "gemini"}
+
+
+def cost_governor_problems(cfg, aliases=None) -> list:
+    """Problems with cfg cost_caps / model_prices (MAPG-11); [] when
+    the enabled backends are fully governable. Pure, unit tested.
+
+    Requires: a positive USD cap for every enabled provider plus
+    'total', numeric price rows, and a usable price row for every
+    concrete model alias (or its pinned snapshot) whose provider is
+    capped. Unpriceable spend cannot be governed.
+    """
+    problems = []
+    aliases = collect_aliases(cfg) if aliases is None else set(aliases)
+    providers = {_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)}
+    if not providers:
+        return problems
+
+    caps = cfg.get("cost_caps") if isinstance(cfg, dict) else None
+    if not isinstance(caps, dict) or not caps:
+        problems.append(
+            "cost_caps missing: add per-provider USD caps plus 'total' "
+            "(no LLM run without the cost governor)"
+        )
+        caps = {}
+    else:
+        for key, value in caps.items():
+            try:
+                if float(value) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                problems.append(f"cost_caps['{key}'] is not a usable USD "
+                                f"amount: {value!r}")
+        for p in sorted(providers):
+            if p not in caps:
+                problems.append(f"cost_caps has no cap for enabled "
+                                f"provider '{p}'")
+        if "total" not in caps:
+            problems.append("cost_caps has no 'total' cap")
+
+    prices = cfg.get("model_prices") if isinstance(cfg, dict) else None
+    prices = prices if isinstance(prices, dict) else {}
+    parsed = {}
+    for model, row in prices.items():
+        try:
+            normalize_price_row(row)
+            parsed[model] = row
+        except ValueError as e:
+            problems.append(f"model_prices['{model}']: {e}")
+
+    pins = cfg.get("model_pins") if isinstance(cfg, dict) else None
+    pins = pins if isinstance(pins, dict) else {}
+    for alias in sorted(pinned_aliases_needed(aliases)):
+        provider = _BACKEND_TO_PROVIDER.get(provider_of(alias), provider_of(alias))
+        if provider is None or (caps and provider not in caps and "total" not in caps):
+            continue
+        candidates = [alias]
+        pin = pins.get(alias)
+        if pin is not None and str(pin).strip():
+            candidates.append(str(pin).strip())
+        if not any(resolve_price_key(parsed, c) is not None for c in candidates):
+            problems.append(
+                f"model_prices has no usable row for '{alias}': "
+                "unpriceable spend cannot be governed"
+            )
+    return problems
 
 
 def in_container() -> bool:
@@ -403,6 +476,23 @@ def run_preflight(cfg_arg: str) -> int:
                 rep.report(INFO, "imports",
                            f"{mod} not importable outside the container "
                            "(expected on the host)")
+
+    # (h) cost governor: caps + prices complete for enabled backends
+    # (MAPG-11). No LLM run without the governor.
+    if not backends_for(aliases):
+        rep.report(INFO, "cost_governor",
+                   "no model backends enabled; cost governor not required")
+    else:
+        gov_problems = cost_governor_problems(cfg, aliases)
+        if gov_problems:
+            rep.report(FAIL, "cost_governor", "; ".join(gov_problems))
+        else:
+            capped = sorted(
+                {_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)}
+            )
+            rep.report(PASS, "cost_governor",
+                       "caps and pinned prices cover enabled provider(s): "
+                       + ", ".join(capped))
 
     if rep.failures:
         print(f"PREFLIGHT FAILED: {rep.failures} check(s) failed")

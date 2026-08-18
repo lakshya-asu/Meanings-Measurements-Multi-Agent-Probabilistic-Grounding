@@ -151,6 +151,68 @@ def test_gt_from_row_degenerate_direction_matches_offset_metric():
     assert gt_xyz_from_row(row) == [2.0, 0.5, 1.0]
 
 
+def test_gt_from_row_zero_distance_scores_against_ann_pos():
+    # Decision D5: a between-style row carries distance_m = 0, and its
+    # answer is the annotated point itself. The offset formula would
+    # degenerate this to the anchor center (3.0, 0.5, 1.0), which is a
+    # different point and the wrong target.
+    row = {
+        "anchor_center_x": "3.0",
+        "anchor_center_y": "0.5",
+        "anchor_center_z": "1.0",
+        "ann_pos_x": "1.25",
+        "ann_pos_y": "0.5",
+        "ann_pos_z": "-2.0",
+        "distance_m": "0.0",
+        "predicate": "between",
+    }
+    assert gt_xyz_from_row(row) == [1.25, 0.5, -2.0]
+
+
+def test_gt_from_row_zero_distance_beats_stale_metric_corrected():
+    # A metric_corrected_* column derived by the offline offset tool
+    # holds the anchor center for a zero-distance row. D5 wins.
+    row = {
+        "metric_corrected_x": "3.0",
+        "metric_corrected_y": "0.5",
+        "metric_corrected_z": "1.0",
+        "anchor_center_x": "3.0",
+        "anchor_center_y": "0.5",
+        "anchor_center_z": "1.0",
+        "ann_pos_x": "1.25",
+        "ann_pos_y": "0.5",
+        "ann_pos_z": "-2.0",
+        "distance_m": "0",
+    }
+    assert gt_xyz_from_row(row) == [1.25, 0.5, -2.0]
+
+
+def test_gt_from_row_zero_distance_without_ann_pos_falls_through():
+    # No annotated point to fall back on: the ordinary path applies and
+    # the row is simply unscoreable.
+    row = {
+        "anchor_center_x": "3.0",
+        "anchor_center_y": "0.5",
+        "anchor_center_z": "1.0",
+        "distance_m": "0.0",
+    }
+    assert gt_xyz_from_row(row) is None
+
+
+def test_gt_from_row_nonzero_distance_still_uses_offset_formula():
+    # Guard against the D5 branch swallowing ordinary offset rows.
+    row = {
+        "anchor_center_x": "0.0",
+        "anchor_center_y": "0.0",
+        "anchor_center_z": "0.0",
+        "ann_pos_x": "5.0",
+        "ann_pos_y": "0.0",
+        "ann_pos_z": "0.0",
+        "distance_m": "2.0",
+    }
+    assert gt_xyz_from_row(row) == [2.0, 0.0, 0.0]
+
+
 def test_gt_from_row_missing_columns_returns_none():
     assert gt_xyz_from_row({}) is None
     assert gt_xyz_from_row({"anchor_center_x": "1.0"}) is None
