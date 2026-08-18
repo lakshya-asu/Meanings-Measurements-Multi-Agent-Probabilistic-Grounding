@@ -210,6 +210,7 @@ def test_rows_are_store_ready_dicts():
     assert set(rows[0]) == {
         "role", "model_name", "prompt_tokens", "completion_tokens",
         "is_retry", "latency_ms", "step_idx",
+        "cache_read_tokens", "cache_write_tokens",
     }
 
 

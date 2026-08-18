@@ -136,6 +136,44 @@ def collect_aliases(node) -> set:
     return found
 
 
+def selected_aliases(cfg) -> set:
+    """The model aliases this run will actually use, or an empty set.
+
+    A run picks its backend with vlm.name, plus any non-null
+    vlm.model_tiers override. collect_aliases deliberately walks the
+    WHOLE cfg, which is right for auditing but wrong for gating: this
+    cfg permanently documents every arm of the factorial, so pins and
+    prices for gpt, gemini and qwen sit in the file even when nobody
+    is running them. Gating on that walk means every single-arm run
+    demands every other provider's API key, pin and price, and a
+    claude-only smoke run can never pass no matter what is filled in.
+
+    Returning an empty set means the selection could not be read; the
+    caller then falls back to the conservative whole-cfg walk, so a
+    cfg shape this function does not understand fails loudly rather
+    than checking nothing.
+    """
+    vlm = cfg.get("vlm") or {}
+    if not isinstance(vlm, dict):
+        return set()
+    out = set()
+
+    name = str(vlm.get("name") or "").strip()
+    if name and _ALIAS_RE.match(name):
+        out.add(name)
+
+    tiers = vlm.get("model_tiers") or {}
+    if isinstance(tiers, dict):
+        for v in tiers.values():
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s and s.lower() not in ("none", "null") and _ALIAS_RE.match(s):
+                out.add(s)
+
+    return out
+
+
 def pinned_aliases_needed(aliases) -> set:
     """Aliases that must carry a pin: concrete model names, not bare
     backend selectors like 'gemini'."""
@@ -143,10 +181,24 @@ def pinned_aliases_needed(aliases) -> set:
 
 
 def unpinned_aliases(aliases, model_pins) -> list:
-    """Return sorted aliases whose pin is missing or empty."""
+    """Return sorted aliases whose pin is missing or empty.
+
+    An alias that is itself the resolved value of some pin counts as
+    pinned. Without that, pinning can never converge: collect_aliases
+    also picks up pin VALUES, so writing the correct pin
+    claude-haiku-4-5 -> claude-haiku-4-5-20251001 immediately creates a
+    brand new unpinned alias out of the snapshot id it just pinned to.
+    A pinned snapshot id is the most pinned thing in the file.
+    """
     pins = model_pins or {}
+    resolved = {
+        str(v).strip() for v in pins.values()
+        if v is not None and str(v).strip()
+    }
     bad = []
     for a in sorted(pinned_aliases_needed(aliases)):
+        if a in resolved:
+            continue
         pin = pins.get(a)
         if pin is None or not str(pin).strip():
             bad.append(a)
@@ -300,7 +352,7 @@ class Reporter:
         print(f"[{status}] {label}: {msg}")
 
 
-def run_preflight(cfg_arg: str) -> int:
+def run_preflight(cfg_arg: str, select=None) -> int:
     rep = Reporter()
 
     # (a) cfg loads and paths resolve
@@ -426,7 +478,28 @@ def run_preflight(cfg_arg: str) -> int:
                        f"{pose_path} covers all {len(need)} scene_floor pairs")
 
     # (e) env keys for the selected backends
-    aliases = collect_aliases(cfg)
+    #
+    # Gate on what this run actually selects (vlm.name plus non-null
+    # model_tiers), not on every model-looking string in the cfg. The
+    # cfg documents the whole factorial permanently, so the wider walk
+    # would demand OpenAI, Google and DashScope keys for a claude-only
+    # run. If the selection cannot be read, fall back to the wide walk
+    # so an unfamiliar cfg over-reports instead of under-reporting.
+    all_aliases = collect_aliases(cfg)
+    cli_select = {str(s).strip() for s in (select or []) if str(s).strip()}
+    if cli_select:
+        aliases = cli_select
+        how = "--select"
+    else:
+        from_cfg = selected_aliases(cfg)
+        aliases = from_cfg or all_aliases
+        how = "cfg vlm.name" if from_cfg else "whole-cfg walk (fallback)"
+    unselected = sorted(all_aliases - aliases)
+    rep.report(INFO, "selection",
+               f"gating via {how} on backend(s) "
+               f"{', '.join(sorted(backends_for(aliases))) or 'none'}"
+               + (f"; documented but not selected this run: "
+                  f"{', '.join(unselected)}" if unselected else ""))
     env = load_env()
     missing_env = missing_env_backends(aliases, env)
     if not aliases:
@@ -464,7 +537,15 @@ def run_preflight(cfg_arg: str) -> int:
 
     # (g) heavy deps importable (required in the container only)
     inside = in_container()
-    for mod in ("numpy", "habitat_sim"):
+    # hydra_python is the scene-graph backend and it is the one import
+    # that fails for an environment reason rather than a missing
+    # package: its bindings need libKimeraRPGO.so from
+    # /catkin_ws/devel/lib, and docker exec does NOT source the catkin
+    # setup that puts it on the library path. A plain `bash -c` fails
+    # and so does a login `bash -lc`; only an explicit
+    # `source /catkin_ws/devel/setup.bash` works. Without this check
+    # preflight goes all green while the runner cannot start at all.
+    for mod in ("numpy", "habitat_sim", "hydra_python"):
         try:
             __import__(mod)
             rep.report(PASS if inside else INFO, "imports", f"{mod} importable")
@@ -484,12 +565,25 @@ def run_preflight(cfg_arg: str) -> int:
                    "no model backends enabled; cost governor not required")
     else:
         gov_problems = cost_governor_problems(cfg, aliases)
+        capped = sorted(
+            {_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)}
+        )
         if gov_problems:
             rep.report(FAIL, "cost_governor", "; ".join(gov_problems))
+        elif not pinned_aliases_needed(aliases):
+            # Every selected alias is a bare backend name, so there is
+            # no concrete model to look up a price for and nothing was
+            # actually verified. Saying PASS here would be a false
+            # green: the run would reach the governor and only then
+            # discover it cannot price what it is spending. Name a
+            # concrete model (vlm.name or --select) to get a real check.
+            rep.report(FAIL, "cost_governor",
+                       "selected backend(s) "
+                       + ", ".join(capped)
+                       + " name no concrete model, so no price could be "
+                         "verified; set vlm.name (or --select) to a pinned "
+                         "model id rather than a bare backend name")
         else:
-            capped = sorted(
-                {_BACKEND_TO_PROVIDER.get(b, b) for b in backends_for(aliases)}
-            )
             rep.report(PASS, "cost_governor",
                        "caps and pinned prices cover enabled provider(s): "
                        + ", ".join(capped))
@@ -506,8 +600,15 @@ def main(argv=None):
         description="Fail-loud preflight for MAPG benchmark runs")
     parser.add_argument("--cfg", default="mapg_benchmark",
                         help="cfg name under src/cfg (or a yaml path)")
+    parser.add_argument("--select", action="append", metavar="ALIAS",
+                        help="model alias this run will use, repeatable. "
+                             "Overrides the cfg's vlm.name for gating, so "
+                             "you can preflight the arm you are about to "
+                             "launch: a runner invoked with vlm.name=X must "
+                             "be preflighted with --select X, otherwise you "
+                             "are checking a different arm than you run.")
     args = parser.parse_args(argv)
-    return run_preflight(args.cfg)
+    return run_preflight(args.cfg, select=args.select)
 
 
 if __name__ == "__main__":

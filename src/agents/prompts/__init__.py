@@ -15,6 +15,16 @@ the one clarifying addition the gemini family had grown (spatial rule
 3 parenthetical). The schema block embedded in each system prompt is
 rendered from src/agents/schemas.py, the same dict the validator
 enforces.
+
+MAPG-10 (deliberate reword, snapshots regenerated): static task rules
+moved from per-step user text into the system text; user text is
+ordered stable-first, volatile-last for prompt caching; candidate,
+frontier, and scene-graph blocks are compact line serializations
+(src/agents/serialization.py) instead of json dumps. Roles whose
+prompts expose ``render_parts`` (spatial, qa) return the user text as
+(text, cacheable) chunks whose concatenation equals ``render``'s user
+string byte for byte; the claude backend puts a cache_control
+breakpoint on cacheable chunks, other providers cache automatically.
 """
 
 from src.agents.prompts import grounding, orchestrator, qa, spatial, verifier

@@ -16,7 +16,7 @@ import math
 import os
 
 from src.agents.prompts import spatial as prompt
-from src.agents.roles._shared import sans_usage, user_parts_with_image
+from src.agents.roles._shared import chunked_parts_with_image, sans_usage
 from src.agents.schemas import SPATIAL_SCHEMA, try_validate
 
 
@@ -39,8 +39,10 @@ class SpatialRole:
             )
             return {"ok": False, "error": "No image available."}
 
-        system, user = prompt.render(blackboard, anchor_obj)
-        parts = user_parts_with_image(user, blackboard.current_image_path)
+        # MAPG-10: the stable scene-graph chunk carries the cache mark;
+        # concatenated text is identical to prompt.render (golden-tested).
+        system, chunks = prompt.render_parts(blackboard, anchor_obj)
+        parts = chunked_parts_with_image(chunks, blackboard.current_image_path)
         try:
             parsed, usage, _latency_ms = self.backend.send(
                 system, parts, SPATIAL_SCHEMA

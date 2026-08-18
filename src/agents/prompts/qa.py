@@ -4,17 +4,26 @@ Text lifted from the legacy claude family. The image is attached by
 the role as a separate request part on every backend; the legacy
 gemini/alibaba copies attached it while claude/openai silently did
 not, one of the divergences MAPG-09 removes.
+
+MAPG-10: the user text is reordered stable-first for prompt caching
+(question and choices are episode-constant, the scene graph block is
+append-mostly under the compact serializer; candidates, frontiers,
+pose, semantic state and history are per-step volatile). Candidate and
+frontier lists are compact lines (src/agents/serialization) instead of
+``json.dumps(..., indent=2)``. ``render_parts`` exposes the
+stable/volatile boundary for the claude cache_control breakpoint.
 """
 
 import json
-from typing import Tuple
+from typing import List, Tuple
 
 from src.agents.schemas import QA_SCHEMA
+from src.agents.serialization import serialize_candidates, serialize_frontiers
 
 SYSTEM = f"""
         SYSTEM: You are an excellent hierarchical graph planning agent.
         Your goal is to navigate an unseen environment to confidently answer a multiple-choice question about the environment.
-        As you explore the environment, your sensors are building a scene graph representation (in json format) and you have access to that scene graph.
+        As you explore the environment, your sensors are building a scene graph representation and you have access to that scene graph.
 
         CRITICAL RULES:
         1. Parse the query to figure out what object or area is being referred to.
@@ -35,23 +44,26 @@ SYSTEM = f"""
         """
 
 
-def render(blackboard) -> Tuple[str, str]:
-    user = f"""
+def render_parts(blackboard) -> Tuple[str, List[Tuple[str, bool]]]:
+    """(system, [(user_text, cacheable), ...]); concatenating the user
+    texts reproduces ``render`` byte for byte."""
+    stable = f"""
         Current Question: {blackboard.question}
         Mode: {blackboard.mode}
         {"Choices: " + json.dumps(blackboard.choices) if getattr(blackboard, "choices", None) else ""}
 
-        Agent Exact Position: {blackboard.agent_pose_hab}
-        Agent Yaw (rad): {blackboard.agent_yaw_rad}
-
-        Scene Graph Candidates (with exact positions):
-        {json.dumps([{"id": o.get("id", ""), "name": o.get("name", ""), "position": o.get("position")} for o in blackboard.available_objects if isinstance(o, dict)], indent=2)}
-
-        Available Frontiers:
-        {json.dumps([{"id": f.get("id", ""), "position": f.get("position")} for f in blackboard.available_frontiers if isinstance(f, dict)], indent=2)}
-
         Environment Scene Graph (Topological Layout):
         {blackboard.scene_graph_str}
+        """
+    volatile = f"""
+        Scene Graph Candidates (id name (x, y, z)):
+        {serialize_candidates(blackboard.available_objects)}
+
+        Available Frontiers (id (x, y, z)):
+        {serialize_frontiers(blackboard.available_frontiers)}
+
+        Agent Exact Position: {blackboard.agent_pose_hab}
+        Agent Yaw (rad): {blackboard.agent_yaw_rad}
 
         Current Environment Semantic State (Agent Room Node):
         {blackboard.agent_semantic_state}
@@ -59,4 +71,9 @@ def render(blackboard) -> Tuple[str, str]:
         GLOBAL FAILURE HISTORY (VERIFIER FEEDBACK):
         {blackboard.global_history}
         """
-    return SYSTEM, user
+    return SYSTEM, [(stable, True), (volatile, False)]
+
+
+def render(blackboard) -> Tuple[str, str]:
+    system, parts = render_parts(blackboard)
+    return system, "".join(text for text, _cacheable in parts)

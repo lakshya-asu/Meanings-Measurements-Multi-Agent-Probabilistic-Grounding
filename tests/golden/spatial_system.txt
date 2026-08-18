@@ -22,6 +22,8 @@
         (Example for a flat table, assuming the 'front' is its top surface normal: phi=0.0)
         (Example for a tv screen, assuming the screen faces horizontally out: phi=1.57)
 
+        Task: Where is the intrinsic front of the Reference Object in the provided image? Output ONLY the egocentric angles for its functional front face relative to the camera view.
+
         CRITICAL INSTRUCTION: You MUST output exactly ONE valid JSON object matching the schema below. Do not include any other text.
         Schema:
         {

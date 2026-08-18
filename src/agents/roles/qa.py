@@ -3,7 +3,7 @@
 from typing import Any, Dict
 
 from src.agents.prompts import qa as prompt
-from src.agents.roles._shared import sans_usage, user_parts_with_image
+from src.agents.roles._shared import chunked_parts_with_image, sans_usage
 from src.agents.schemas import QA_SCHEMA, try_validate
 
 
@@ -18,8 +18,10 @@ class QaRole:
         return self.backend.model_name
 
     def process(self, blackboard) -> Dict[str, Any]:
-        system, user = prompt.render(blackboard)
-        parts = user_parts_with_image(user, blackboard.current_image_path)
+        # MAPG-10: the stable question+scene-graph chunk carries the
+        # cache mark; concatenated text is identical to prompt.render.
+        system, chunks = prompt.render_parts(blackboard)
+        parts = chunked_parts_with_image(chunks, blackboard.current_image_path)
         try:
             parsed, usage, _latency_ms = self.backend.send(system, parts, QA_SCHEMA)
         except Exception as e:

@@ -54,12 +54,22 @@ def _backends():
 
 
 def _extract_texts(provider, request):
-    """(system_text, [user_text_parts], n_image_parts) from a payload."""
+    """(system_text, [user_text_parts], n_image_parts) from a payload.
+
+    MAPG-10: caching annotations are request structure, not text. The
+    claude system may be a block list (each block carrying
+    cache_control) and user text may arrive as several blocks; the
+    extraction joins the text and ignores cache_control, so the
+    equality assertions below still compare prompt BYTES.
+    """
     if provider == "claude":
         content = request["messages"][0]["content"]
         texts = [c["text"] for c in content if c.get("type") == "text"]
         images = [c for c in content if c.get("type") == "image"]
-        return request["system"], texts, len(images)
+        system = request["system"]
+        if isinstance(system, list):
+            system = "".join(b["text"] for b in system)
+        return system, texts, len(images)
     if provider in ("openai", "alibaba"):
         system = request["messages"][0]["content"]
         content = request["messages"][1]["content"]
@@ -94,7 +104,7 @@ def test_prompt_text_identical_across_all_backends(role, system, user):
         request = backend.build_request(system, [text_part(user)])
         got_system, got_texts, n_images = _extract_texts(provider, request)
         assert got_system == golden_system, f"{provider}: system text diverged"
-        assert got_texts == [golden_user], f"{provider}: user text diverged"
+        assert "".join(got_texts) == golden_user, f"{provider}: user text diverged"
         assert n_images == 0
 
 
@@ -110,5 +120,5 @@ def test_image_attachment_stays_outside_the_text(role, system, user, tmp_path):
         got_system, got_texts, n_images = _extract_texts(provider, request)
         # Attaching the image changes nothing about the text parts.
         assert got_system == _snapshot(role, "system")
-        assert got_texts == [golden_user], f"{provider}: image leaked into text"
+        assert "".join(got_texts) == golden_user, f"{provider}: image leaked into text"
         assert n_images == 1, f"{provider}: image part missing"

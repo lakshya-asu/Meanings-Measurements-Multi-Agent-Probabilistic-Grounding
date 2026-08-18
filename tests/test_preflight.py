@@ -15,6 +15,7 @@ from src.scripts.preflight import (
     missing_env_backends,
     parse_env_file,
     pinned_aliases_needed,
+    selected_aliases,
     unpinned_aliases,
 )
 
@@ -138,6 +139,11 @@ class TestAliases:
         assert bad == ["claude-opus-4-6", "gpt-5.2-chat-latest", "qwen3-vl-plus"]
 
     def test_filled_pins_pass(self):
+        # These pin values are synthetic fixtures exercising the
+        # mechanism, not real snapshot ids. In particular
+        # claude-opus-4-6 has NO dated variant: the alias IS the
+        # complete pinned id, and the real cfg pins it to itself. Do
+        # not copy the shape below into cfg.
         pins = {
             "claude-opus-4-6": "claude-opus-4-6-20260115",
             "gpt-5.2-chat-latest": "gpt-5.2-2026-01-01",
@@ -153,6 +159,82 @@ class TestAliases:
         assert unpinned_aliases({"claude-opus-4-6"}, {"claude-opus-4-6": "  "}) == [
             "claude-opus-4-6"
         ]
+
+    def test_pin_value_counts_as_pinned(self):
+        # collect_aliases picks up pin VALUES as well as keys, so a
+        # correctly pinned snapshot id used to appear as a fresh
+        # unpinned alias and pinning could never converge: filling in
+        # one pin manufactured the next failure out of its own value.
+        pins = {"claude-haiku-4-5": "claude-haiku-4-5-20251001"}
+        aliases = {"claude-haiku-4-5", "claude-haiku-4-5-20251001"}
+        assert unpinned_aliases(aliases, pins) == []
+
+    def test_pin_value_rule_does_not_excuse_a_genuinely_unpinned_alias(self):
+        # The self-pin allowance must not leak: an alias nobody pinned
+        # is still flagged even when other pins resolve fine.
+        pins = {"claude-haiku-4-5": "claude-haiku-4-5-20251001"}
+        aliases = {"claude-haiku-4-5-20251001", "gpt-5.2-chat-latest"}
+        assert unpinned_aliases(aliases, pins) == ["gpt-5.2-chat-latest"]
+
+
+# ---------------------------------------------------------------------------
+# selected_aliases: gate on the arm actually being run
+# ---------------------------------------------------------------------------
+
+class TestSelectedAliases:
+    def test_reads_vlm_name(self):
+        assert selected_aliases({"vlm": {"name": "claude-opus-4-6"}}) == {
+            "claude-opus-4-6"
+        }
+
+    def test_includes_non_null_model_tiers(self):
+        cfg = {
+            "vlm": {
+                "name": "claude-opus-4-6",
+                "model_tiers": {
+                    "orchestrator": "claude-haiku-4-5-20251001",
+                    "grounding": None,
+                    "spatial": None,
+                },
+            }
+        }
+        assert selected_aliases(cfg) == {
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+        }
+
+    def test_null_like_tier_values_are_ignored(self):
+        cfg = {
+            "vlm": {
+                "name": "claude-opus-4-6",
+                "model_tiers": {"a": None, "b": "", "c": "null", "d": "none"},
+            }
+        }
+        assert selected_aliases(cfg) == {"claude-opus-4-6"}
+
+    def test_unselected_backends_are_excluded(self):
+        # The whole point: the cfg documents every arm of the
+        # factorial permanently, so a claude run must not be gated on
+        # OpenAI, Google and DashScope keys just because their pins and
+        # prices live in the same file.
+        cfg = dict(CFG)
+        cfg["vlm"] = {"name": "claude-opus-4-6"}
+        wide = collect_aliases(cfg)
+        assert "gpt-5.2-chat-latest" in wide
+        assert "qwen3-vl-plus" in wide
+        assert selected_aliases(cfg) == {"claude-opus-4-6"}
+
+    def test_returns_empty_when_selection_unreadable(self):
+        # Empty means "cannot tell", and the caller falls back to the
+        # conservative whole-cfg walk. It must never mean "nothing is
+        # selected, so check nothing".
+        assert selected_aliases({}) == set()
+        assert selected_aliases({"vlm": None}) == set()
+        assert selected_aliases({"vlm": "not-a-mapping"}) == set()
+        assert selected_aliases({"vlm": {"name": ""}}) == set()
+
+    def test_non_model_vlm_name_is_not_an_alias(self):
+        assert selected_aliases({"vlm": {"name": "msp_point"}}) == set()
 
 
 class TestEnvBackends:

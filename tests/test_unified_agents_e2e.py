@@ -166,9 +166,13 @@ def test_mcq_fast_path_is_one_call_with_real_tokens(tmp_path):
     assert rows[0]["prompt_tokens"] == 111
     assert rows[0]["completion_tokens"] == 22
     # The QA image rode as a separate part; exactly one call was sent.
+    # MAPG-10: the user text arrives as two chunks (stable cacheable
+    # prefix + volatile suffix) followed by the image part.
     assert len(fake.sent) == 1
     _system, parts, _schema = fake.sent[0]
-    assert [p["type"] for p in parts] == ["text", "image_path"]
+    assert [p["type"] for p in parts] == ["text", "text", "image_path"]
+    assert parts[0].get("cache") is True
+    assert parts[1].get("cache") is None
 
 
 def test_where_path_locks_anchor_then_runs_spatial_and_verifier(tmp_path):
@@ -191,18 +195,36 @@ def test_where_path_locks_anchor_then_runs_spatial_and_verifier(tmp_path):
 
     # Step 2: anchor locked -> spatial runs, programmatic verifier
     # gates the step without an LLM call (llm disabled by default).
+    # MAPG-10 parse-once: the orchestrator does NOT run again (the
+    # question is episode-constant and the failure history is
+    # unchanged), so step 2 is grounding + spatial only.
     _t, target_id, _c, _conf, extra = planner.get_next_action(
         agent_yaw_rad=0.5, agent_pos_hab=pose
     )
     roles = [r["role"] for r in planner.call_log.rows()]
-    assert roles == ["orchestrator", "grounding", "orchestrator", "grounding", "spatial"]
-    assert planner.call_log.total() == 5  # verifier llm_used=False: not a call
+    assert roles == ["orchestrator", "grounding", "grounding", "spatial"]
+    assert planner.call_log.total() == 4  # verifier llm_used=False: not a call
     assert all(r["prompt_tokens"] == 111 for r in planner.call_log.rows())
     assert all(r["completion_tokens"] == 22 for r in planner.call_log.rows())
     assert extra["verifier"]["llm_used"] is False
     assert extra["verifier"]["checks"] is not None
     assert extra["metric_parse"]["d0_used_m"] == 3.0
     assert extra["action_type"] in ("goto_object", "lookaround", "goto_frontier", "answer")
+
+
+def test_orchestrator_reparses_when_history_changes(tmp_path):
+    """MAPG-10 parse-once invalidation: a new failure-history entry
+    (verifier feedback) must trigger a fresh orchestrator parse so
+    prompt rule 5 (choose a different interpretation) still works."""
+    planner, _fake = _make_planner(tmp_path, QUESTION_WHERE)
+    pose = np.array([1.0, 0.5, -2.0], dtype=np.float32)
+    planner.get_next_action(agent_yaw_rad=0.5, agent_pos_hab=pose)
+    roles = [r["role"] for r in planner.call_log.rows()]
+    assert roles.count("orchestrator") == 1
+    planner.blackboard.global_history += "Step 1 FAIL: wrong anchor id.\n"
+    planner.get_next_action(agent_yaw_rad=0.5, agent_pos_hab=pose)
+    roles = [r["role"] for r in planner.call_log.rows()]
+    assert roles.count("orchestrator") == 2
 
 
 def test_agents_impl_unknown_falls_back_to_unified(tmp_path):
@@ -227,3 +249,62 @@ def test_logical_role_is_gone():
 
     with pytest.raises(ValueError, match="logical"):
         create_role("logical", provider="claude")
+
+
+def test_planner_applies_model_tiers(tmp_path):
+    """MAPG-10: cfg model_tiers overrides the backend model per role;
+    null (missing) roles stay on the provider default."""
+    cfg = SimpleNamespace(
+        agents_impl="unified",
+        model_tiers={"orchestrator": "claude-haiku-4-5",
+                     "verifier": "claude-haiku-4-5"},
+    )
+    planner = _TestPlanner(cfg, StubSgSim(), QUESTION_WHERE, out_path=str(tmp_path))
+    assert planner.orchestrator.backend.model_name == "claude-haiku-4-5"
+    assert planner.verifier.backend.model_name == "claude-haiku-4-5"
+    assert planner.grounder.backend.model_name == "claude-opus-4-6"
+    assert planner.spatial.backend.model_name == "claude-opus-4-6"
+    assert planner.qa.backend.model_name == "claude-opus-4-6"
+
+
+def test_planner_serializes_compact_when_graph_available(tmp_path):
+    """MAPG-10: with a netx-protocol graph on the sim, the blackboard
+    scene graph text is the compact line format; the historical JSON
+    string is only the fallback for graphless stubs."""
+    from src.agents.cost_estimate import SimpleGraph
+
+    class GraphSgSim(StubSgSim):
+        def __init__(self):
+            super().__init__()
+            g = SimpleGraph()
+            g.add_node("room_0", name="living room", layer=4,
+                       position=[0.0, 0.0, 0.0])
+            for o in OBJECTS:
+                g.add_node(o["id"], name=o["name"], layer=2,
+                           position=list(o["position"]),
+                           bbox_extents=list(o["size"]))
+                g.add_edge("room_0", o["id"], type="room-to-object")
+            g.add_node("agent_0", name="agent", layer=2, timestamp=0.0,
+                       position=[1.0, 0.5, -2.0])
+            self.filtered_netx_graph = g
+            self.curr_agent_id = "agent_0"
+
+    planner, _fake = _make_planner(tmp_path, QUESTION_MCQ, choices=CHOICES)
+    planner.sg_sim = GraphSgSim()
+    planner.get_next_action(
+        agent_yaw_rad=0.5, agent_pos_hab=np.array([1.0, 0.5, -2.0],
+                                                  dtype=np.float32)
+    )
+    sg = planner.blackboard.scene_graph_str
+    assert sg.startswith("ROOM room_0 living room")
+    assert "OBJ object_1 tv (2.00, 0.50, -3.00) size=(0.90, 0.60, 0.20) room=room_0" in sg
+    assert sg.endswith("AGENT agent_0 (1.00, 0.50, -2.00)")
+    assert "{" not in sg  # no JSON reached the prompt
+
+
+def test_planner_legacy_json_mode_preserves_old_text(tmp_path):
+    (tmp_path / "current_img_0.png").write_bytes(b"png")
+    cfg = SimpleNamespace(agents_impl="unified", sg_serialization="legacy_json")
+    planner = _TestPlanner(cfg, StubSgSim(), QUESTION_WHERE, out_path=str(tmp_path))
+    assert planner.sg_serialization == "legacy_json"
+    assert planner._serialized_scene_graph() == SCENE_GRAPH_STR
