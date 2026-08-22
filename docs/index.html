@@ -129,22 +129,22 @@
           Robots collaborating with humans need to convert natural language goals into actionable,
           physically grounded decisions. A command like "go two meters to the right of the fridge"
           requires grounding a semantic reference, a spatial relation, and a metric constraint
-          all at once, inside a 3D scene. While recent vision-language models (VLMs) are strong
-          at semantic grounding, they are not designed to handle metric constraints in physically
-          defined spaces. We empirically show that state-of-the-art VLM-based grounding approaches
-          struggle on complex metric-semantic queries.
+          all at once, inside a 3D scene. Existing vision-language grounding systems often produce
+          discrete actions or single target hypotheses rather than metric-semantic goal densities.
+          In our frozen evaluation, adapted GraphEQA produces lower horizontal SR@2m than MAPG
+          under matched backends, although the adapted interfaces differ.
         </p>
         <br>
         <p>
           To address this, we propose MAPG (Multi-Agent Probabilistic Grounding), an agentic
           framework that decomposes language queries into structured subcomponents and queries a
-          VLM to ground each one. MAPG then probabilistically composes these grounded outputs to
-          produce metrically consistent, actionable decisions in 3D space. We evaluate MAPG on
-          the HM-EQA benchmark and show consistent performance improvements over strong baselines.
-          We also introduce MAPG-Bench, a new benchmark specifically designed to evaluate
-          metric-semantic goal grounding, covering 30 indoor scenes and 100 annotated queries.
-          Finally, we present a real-world robot demonstration showing that MAPG transfers
-          beyond simulation when a structured scene representation is available.
+          VLM to ground each one. MAPG probabilistically composes these grounded outputs into a
+          goal density, then selects the navmesh-masked argmax as the planner goal point. We
+          evaluate MAPG on MAPG-Bench, a frozen protocol with 98 object-to-world queries across
+          41 HM3D scenes, and report a backend sensitivity check on 94 runnable HM-EQA questions.
+          The current results are exploratory, single-seed measurements rather than a completed
+          multi-seed confirmatory analysis. A real-world robot demonstration illustrates the
+          approach outside simulation when a structured scene representation is available.
         </p>
       </div>
     </div>
@@ -160,20 +160,19 @@
         <ul style="list-style: disc; padding-left: 1.5rem; line-height: 2;">
           <li>
             <strong>A multi-agent probabilistic 3D spatial reasoning framework</strong> that couples
-            online 3D scene graphs with analytically defined continuous spatial kernels to produce
-            planner-ready goal distributions for metric-semantic instructions.
+            online 3D scene graphs with analytically defined continuous spatial kernels, then
+            selects the navmesh-masked argmax as a planner goal for metric-semantic instructions.
           </li>
           <li>
-            <strong>MAPG-Bench</strong>, a first-of-its-kind HM3D goal grounding benchmark for
-            metric-semantic queries, with an open-source dataset and evaluation protocol spanning
-            30 unique indoor scenes and 100 annotated queries designed for object-to-world goal
-            grounding in realistic indoor layouts.
+            <strong>MAPG-Bench</strong>, an HM3D goal-grounding benchmark with a frozen registered
+            split of 98 object-to-world queries across 41 indoor scenes. We plan to release the
+            dataset and evaluation protocol with versioned corrections for known annotation issues.
           </li>
           <li>
-            <strong>Empirical findings and ablations</strong> showing our method achieves low
-            distance error (0.07 m) and low angular errors (0.3 degree yaw, 3.8 degree pitch) in
-            goal grounding, along with a failure taxonomy covering failure mode categories for
-            reproducible comparison with future goal-grounding systems.
+            <strong>Exploratory ground-truth results</strong> under one frozen seed and split.
+            Across five unoptimized VLM backends, horizontal SR@1m ranges from 17.35% to 21.43%
+            and horizontal SR@2m from 40.82% to 43.88%. The 3D SR@1m range is 5.10% to 6.12%.
+            These metrics evaluate waypoint correctness, not the model's self-reported confidence.
           </li>
         </ul>
       </div>
@@ -224,10 +223,9 @@
           </p>
           <p>
             <strong>4. Verifier and Planner.</strong> A Verifier checks the composed distribution
-            for coherence and can trigger corrective retries if needed. The final composed
-            distribution is passed directly to a sampling-based planner (RRT*), which extracts
-            the top-k waypoints as executable navigation targets. This makes the output
-            directly usable by a motion planner without any additional interpretation.
+            for coherence and can trigger corrective retries if needed. MAPG masks the density to
+            the navigation mesh and selects its argmax. That point is passed to RRT* as the
+            executable planner goal.
           </p>
         </div>
 
@@ -266,31 +264,47 @@
       <div class="column is-10">
 
         <p style="margin-bottom: 1.5rem;">
-          We evaluate MAPG on two benchmarks: <strong>MAPG-Bench</strong>, our new metric-semantic
-          goal grounding benchmark, and <strong>HM-EQA</strong>, a standard embodied question
-          answering benchmark. On MAPG-Bench, MAPG is compared against open-sourced specialist
-          models (SRGPT, GraphEQA) and proprietary generalist VLMs across several variants
-          (Gemini 3 Pro, OpenAI GPT 5.2, Gemini 2.5 Pro, Claude Opus 4.6).
+          We evaluate MAPG on <strong>MAPG-Bench</strong>, our metric-semantic goal-grounding
+          benchmark, and use <strong>HM-EQA</strong> for a separate backend sensitivity check.
+          MAPG-Bench contains 98 frozen object-to-world episodes across 41 HM3D scenes. The
+          primary metric, horizontal SR@1m, measures whether the predicted ground-plane waypoint
+          is within 1 m of reprojected ground truth. Missing predictions count as failures.
+          Horizontal SR@2m is descriptive, while 3D SR retains vertical displacement as a sanity
+          check. All reported MAPG-Bench results use one seed, so they are exploratory.
         </p>
 
         <p style="margin-bottom: 1.5rem;">
-          Our best MAPG variant (Claude Opus 4.6) reduces the object-to-world localization error
-          from <strong>5.82 m down to 0.07 m</strong> (a 98.8% reduction), yaw error from
-          13.5 degrees to 0.3 degrees (85.9% reduction), and pitch error from 27.9 degrees to
-          3.8 degrees (84.2% reduction), while achieving a Task Success Rate of 0.98 and
-          an Anchor Pick Success Rate of 0.98. These gains are primarily structural: removing
-          the explicit spatial reasoner drops object-selection success rate from 0.42 to 0.20,
-          confirming that explicit decomposition and composition are the primary drivers,
-          not just better prompting.
+          Across five unoptimized VLM backends, horizontal SR@1m ranges from
+          <strong>17.35% to 21.43%</strong>, horizontal SR@2m ranges from 40.82% to 43.88%,
+          and 3D SR@1m ranges from 5.10% to 6.12%. A Luna configuration selected post hoc from
+          legacy confidence-commit failures on this same split reaches 18.37% horizontal SR@1m,
+          46.94% horizontal SR@2m, and 2.04% 3D SR@1m. It does not improve the primary endpoint
+          over unoptimized Luna at 20.41% and is not an estimate of held-out generalization.
+          The preregistered three-seed analysis, confidence intervals, and error CDF remain
+          incomplete.
         </p>
 
         <p style="margin-bottom: 2rem;">
-          On HM-EQA question answering, MAPG (Claude 4.6 Opus) reaches a task success rate
-          of 0.71, outperforming all compared baselines including GraphEQA-Gemini-2.5Pro at 0.67.
-          We also ran a real-world robot demo using a Robotis AI Worker robot, constructing a
-          scene graph from a physical indoor environment and running MAPG inference on spatial
-          queries. MAPG successfully grounded the queried targets, showing the approach
-          transfers beyond simulation.
+          In a same-backend comparison rescored under MAPG's reprojected-ground-truth convention,
+          unoptimized Luna reaches 42.86% horizontal SR@2m with MAPG versus 7.14% with adapted
+          GraphEQA. Flash reaches 43.88% with MAPG versus 23.47% with adapted GraphEQA. These are
+          descriptive single-seed comparisons, and the adapted interfaces differ. Our
+          implementation of a LINGO-Space-style baseline disables numeric-literal conditioning
+          under the matched unoptimized Luna control. It reaches 16.33% versus 20.41% at the
+          primary horizontal SR@1m threshold, but 43.88% versus 42.86% at horizontal SR@2m. We
+          treat that threshold tradeoff as a sensitivity result, not causal proof.
+        </p>
+
+        <p style="margin-bottom: 2rem;">
+          On the 94 runnable HM-EQA questions, exact-answer accuracy is 44.68% for Luna, 60.64%
+          for Flash, and 41.49% for GPT 5.2. This is a backend sensitivity check, not a comparison
+          with a published state of the art. A post-freeze MAPG-Bench validator also identified
+          69 potential annotation or metadata issues, including 12 radial outliers. The frozen
+          bytes remain unchanged for reproducibility, and corrected labels will be versioned.
+          Fourteen above or below queries are scored as ground-plane proxies by the primary
+          horizontal metric, and every backend is 0 of 14 at 3D SR@1m. The Robotis AI Worker
+          demonstration illustrates the approach in one physical environment but is not a
+          systematic real-world evaluation.
         </p>
 
         <h3 class="title is-5" style="margin-bottom: 1rem;">Decomposed Grounding Visualizations</h3>
