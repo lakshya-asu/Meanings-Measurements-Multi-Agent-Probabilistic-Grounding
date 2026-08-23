@@ -17,6 +17,7 @@ import google.generativeai as genai
 # Graph EQA / Habitat imports
 from src.envs.utils import pos_normal_to_habitat
 from src.utils.data_utils import get_latest_image
+from src.schema.prediction import normalize_prediction
 
 # MSP imports
 from src.msp.pdf import combined_logpdf as _combined_logpdf
@@ -900,7 +901,7 @@ Output STRICT JSON only:
 
                 self._history += f"[t={self._t}] action=lookaround\n"
                 self._t += 1
-                return None, None, False, 0.0, plan
+                return None, None, False, 0.0, normalize_prediction(plan)
 
             fid = str(frontiers[0]["id"])
             plan = {
@@ -916,7 +917,7 @@ Output STRICT JSON only:
 
             self._history += f"[t={self._t}] action=goto_frontier chosen_id={fid}\n"
             self._t += 1
-            return self.sg_sim.get_position_from_id(fid), fid, False, 0.0, plan
+            return self.sg_sim.get_position_from_id(fid), fid, False, 0.0, normalize_prediction(plan)
 
         anchor_pos = np.asarray(anchor_obj["position"], dtype=np.float32)
 
@@ -992,7 +993,7 @@ Output STRICT JSON only:
 
             self._history += f"[t={self._t}] kernel_failed error={kernel.get('error','')}\n"
             self._t += 1
-            return None, None, False, 0.0, plan
+            return None, None, False, 0.0, normalize_prediction(plan)
 
         dist_m = _parse_q_dist(self._question)
 
@@ -1318,4 +1319,6 @@ Output STRICT JSON only:
         self._t += 1
 
         is_confident = is_answer and (conf >= 0.90)
-        return target_pose, target_id, is_confident, conf, plan
+        # Keep target_xyz_hab for backward compatibility and add the
+        # canonical target_point_xyz key for the evaluator.
+        return target_pose, target_id, is_confident, conf, normalize_prediction(plan)

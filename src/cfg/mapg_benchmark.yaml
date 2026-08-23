@@ -6,10 +6,32 @@ results_filename: results_${vlm.msp_nobnn.mode}
 gpu: 0
 sim_gpu: 0
 
+# Frozen benchmark split this config runs on (gate 2). Loaded and
+# SHA-verified through src/splits.py. Preflight checks it.
+split: bench_v1_98
+
+# Model pins: map each floating model alias to a pinned snapshot id
+# before running. Empty values are placeholders to be filled at run
+# time. Runs must fail if a used alias has no pin; preflight enforces
+# this (check f).
+model_pins:
+  claude-opus-4-6: ''
+  gpt-5.2-chat-latest: ''
+  qwen3-vl-plus: ''
+
 data:
-  question_data_path: '/datasets/explore-eqa/questions_msp_sample_2.csv'
+  # Frozen split CSV, repo relative. Resolved through src/paths.py
+  # (resolve_data_path), which maps relative paths onto the repo root.
+  # In the container the repo is mounted at /workspace so the same
+  # relative path works there too.
+  question_data_path: 'splits/bench_v1_98.csv'
   question_data_path_choice: '/datasets/explore-eqa/eqa-questions.csv'
-  init_pose_data_path: '/datasets/explore-eqa/scene_init_poses_semantic_only_2.csv'
+  # Was scene_init_poses_semantic_only_2.csv, which does not exist.
+  # Of the existing candidates, _new covers 49 of the split's 64
+  # scene_floor pairs (same columns), vs 28 for _semantic_only and 0
+  # for _occlusion, so it is the closest match. Preflight reports the
+  # remaining gaps.
+  init_pose_data_path: '/datasets/explore-eqa/scene_init_poses_semantic_only_new.csv'
   init_pose_data_path_choice: '/datasets/explore-eqa/scene_init_poses.csv'
   semantic_annot_data_path: '/datasets/hm3d/train'
   scene_data_path: '/datasets/hm3d/train'
