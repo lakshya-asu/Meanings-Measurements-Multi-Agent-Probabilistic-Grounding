@@ -101,9 +101,6 @@ tbody tr:hover { background: #f7faff; }
 .image-grid img { display: block; width: 100%; border-radius: 9px; }
 .image-grid figcaption { margin-top: 8px; text-align: center; font-size: .86rem; font-weight: 700; }
 
-.review-note { padding: 34px; border: 1px solid #fed7aa; border-radius: 20px; background: var(--warm); text-align: center; }
-.review-note h2 { margin: 0; font-size: 1.4rem; }
-.review-note p { max-width: 760px; margin: 8px auto 0; color: var(--muted); }
 footer { margin-top: 72px; padding: 28px 20px; color: #dce8f5; background: #0e2b43; text-align: center; font-size: .85rem; }
 
 @media (max-width: 900px) {
